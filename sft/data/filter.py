@@ -72,9 +72,12 @@ def load_valid_indices(labels_dir: Path) -> set[int] | None:
             df = pd.read_excel(label_file)
         elif suffix == ".jsonl":
             rows = []
-            with open(label_file) as f:
+            with open(label_file, encoding="utf-8", errors="replace") as f:
                 for line in f:
-                    rows.append(json.loads(line))
+                    try:
+                        rows.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
             df = pd.DataFrame(rows)
         else:
             continue
@@ -88,7 +91,7 @@ def load_valid_indices(labels_dir: Path) -> set[int] | None:
         # Find label column
         cols_lower = {c.lower(): c for c in df.columns}
         label_col = None
-        for candidate in ["label", "classification", "class", "category", "type", "noisy"]:
+        for candidate in ["quality_label", "label", "classification", "class", "category", "type", "noisy", "pred_quality_label"]:
             if candidate in cols_lower:
                 label_col = cols_lower[candidate]
                 break
@@ -109,7 +112,7 @@ def load_valid_indices(labels_dir: Path) -> set[int] | None:
 
         # Find index column
         idx_col = None
-        for candidate in ["index", "id", "idx", "example_id", "sample_id", "line", "row"]:
+        for candidate in ["idx", "index", "id", "example_id", "sample_id", "line", "row"]:
             if candidate in cols_lower:
                 idx_col = cols_lower[candidate]
                 break
