@@ -116,8 +116,7 @@ def main():
         eval_steps=tcfg["save_steps"],
         max_length=cfg["model"]["max_seq_length"],
         dataset_text_field="text",
-        packing=True,  # Unsloth efficient packing
-        eos_token=eos_token,
+        packing=False,
         report_to="none",  # change to "wandb" if using W&B
     )
 
