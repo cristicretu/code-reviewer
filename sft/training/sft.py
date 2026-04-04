@@ -92,6 +92,10 @@ def main():
     tcfg = cfg["training"]
     output_dir = cfg["output"]["dir"]
 
+    # Get the actual EOS token from the tokenizer (TRL defaults to a bad placeholder)
+    eos_token = tokenizer.eos_token
+    print(f"Using EOS token: {repr(eos_token)}")
+
     training_args = SFTConfig(
         output_dir=output_dir,
         num_train_epochs=tcfg["num_epochs"],
@@ -113,6 +117,7 @@ def main():
         max_length=cfg["model"]["max_seq_length"],
         dataset_text_field="text",
         packing=True,  # Unsloth efficient packing
+        eos_token=eos_token,
         report_to="none",  # change to "wandb" if using W&B
     )
 
