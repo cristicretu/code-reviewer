@@ -12,6 +12,8 @@ Usage:
 Add --judge to also run LLM-as-judge (requires ANTHROPIC_API_KEY).
 """
 
+import unsloth  # noqa: F401 — must be imported before transformers
+
 import argparse
 import json
 import os
@@ -30,13 +32,19 @@ def generate_predictions(
     from unsloth import FastLanguageModel
 
     print(f"Loading model: {model_path}")
-    model, tokenizer = FastLanguageModel.from_pretrained(
+    model, processing_class = FastLanguageModel.from_pretrained(
         model_name=model_path,
-        max_seq_length=4096,
+        max_seq_length=2048,
         dtype=None,
         load_in_4bit=True,
     )
     FastLanguageModel.for_inference(model)
+
+    # Extract tokenizer from VL processor if needed
+    if hasattr(processing_class, "tokenizer"):
+        tokenizer = processing_class.tokenizer
+    else:
+        tokenizer = processing_class
 
     # Load test data
     examples = []
