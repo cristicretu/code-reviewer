@@ -121,6 +121,7 @@ def main():
         max_length=cfg["model"]["max_seq_length"],
         dataset_text_field="text",
         packing=False,
+        eos_token=None,  # Use tokenizer's default, skip TRL's broken check
         report_to="none",  # change to "wandb" if using W&B
     )
 
