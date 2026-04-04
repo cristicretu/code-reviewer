@@ -1,0 +1,25 @@
+# Core
+datasets>=2.19
+huggingface-hub>=0.23
+transformers>=4.41
+trl>=0.9
+peft>=0.11
+accelerate>=0.31
+safetensors>=0.4
+sentencepiece>=0.2
+pyyaml>=6.0
+tqdm>=4.66
+pandas>=2.2
+requests>=2.32
+
+# Training (install on GPU machine)
+torch>=2.3
+bitsandbytes>=0.43
+xformers>=0.0.26
+# Unsloth: pip install unsloth (see setup_cloud.sh)
+
+# Evaluation
+sacrebleu>=2.4
+rouge-score>=0.1.2
+bert-score>=0.3.13
+anthropic>=0.26

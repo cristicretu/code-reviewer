@@ -1,0 +1,45 @@
+# SFT Training Configuration
+# Intended for: RunPod A100 80GB
+
+model:
+  name: "Qwen/Qwen3.5-9B"
+  max_seq_length: 4096
+  dtype: null  # auto-detect (bf16 on A100)
+  load_in_4bit: true
+
+lora:
+  r: 16
+  alpha: 16
+  dropout: 0
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+training:
+  num_epochs: 3
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4
+  lr_scheduler: "cosine"
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  fp16: false
+  bf16: true
+  seed: 42
+  logging_steps: 25
+  save_steps: 500
+  save_total_limit: 3
+
+data:
+  train_path: "data/processed/train.jsonl"
+  val_path: "data/processed/val.jsonl"
+
+output:
+  dir: "outputs/sft"
+  hub_model_id: null  # set to push to HuggingFace Hub
