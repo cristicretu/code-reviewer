@@ -92,9 +92,10 @@ def main():
     tcfg = cfg["training"]
     output_dir = cfg["output"]["dir"]
 
-    # Get the actual EOS token from the tokenizer (TRL defaults to a bad placeholder)
+    # Fix TRL's broken default eos_token ('<EOS_TOKEN>' placeholder doesn't exist in vocab)
     eos_token = tokenizer.eos_token
     print(f"Using EOS token: {repr(eos_token)}")
+    SFTConfig.__dataclass_fields__["eos_token"].default = eos_token
 
     training_args = SFTConfig(
         output_dir=output_dir,
@@ -119,9 +120,6 @@ def main():
         packing=False,
         report_to="none",  # change to "wandb" if using W&B
     )
-
-    # Force-set EOS token on config (SFTConfig ignores it in __init__)
-    training_args.eos_token = eos_token
 
     # --- Train ---
     trainer = SFTTrainer(
