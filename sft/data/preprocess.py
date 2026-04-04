@@ -1,15 +1,10 @@
 """Convert filtered CodeReviewer data to chat-format SFT training data.
 
 Reads:
-    - data/processed/filtered.jsonl  (filtered training data)
+    - data/processed/train.jsonl (filtered training data with {patch, msg} objects)
 
 Writes:
-    - data/processed/sft_train.jsonl  (chat-format conversations)
-
-Each example becomes a conversation:
-    system: Code review system prompt
-    user: The code diff
-    assistant: The review comment
+    - data/processed/sft_train.jsonl (chat-format conversations)
 
 Usage:
     python -m sft.data.preprocess [--in-dir data/processed] [--out-dir data/processed]
@@ -41,7 +36,7 @@ def normalize_diff(patch: str) -> str:
     """Clean up the CodeReviewer diff format.
 
     CodeReviewer uses a simplified format with <add>/<del> tags.
-    We normalize to a more readable format.
+    Normalize to a more readable unified-diff-like format.
     """
     lines = []
     for line in patch.split("\n"):
@@ -56,9 +51,9 @@ def normalize_diff(patch: str) -> str:
 
 
 def format_example(example: dict) -> dict | None:
-    """Convert a raw CodeReviewer example to chat format.
+    """Convert a (patch, msg) pair to chat format.
 
-    Returns None if the example should be skipped (empty patch or msg).
+    Returns None if the example should be skipped.
     """
     patch = example.get("patch", "").strip()
     msg = example.get("msg", "").strip()
@@ -84,37 +79,38 @@ def format_example(example: dict) -> dict | None:
 def preprocess(in_dir: Path = DEFAULT_IN, out_dir: Path = DEFAULT_OUT) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    in_path = in_dir / "filtered.jsonl"
-    if not in_path.exists():
-        raise FileNotFoundError(
-            f"{in_path} not found. Run `python -m sft.data.filter` first."
-        )
+    # Process all splits
+    for split_name in ["train", "valid", "validation", "test", "dev"]:
+        in_path = in_dir / f"{split_name}.jsonl"
+        if not in_path.exists():
+            continue
 
-    out_path = out_dir / "sft_train.jsonl"
-    kept = 0
-    skipped = 0
+        out_path = out_dir / f"sft_{split_name}.jsonl"
+        kept = 0
+        skipped = 0
 
-    with open(in_path) as fin, open(out_path, "w") as fout:
-        for line in tqdm(fin, desc="Preprocessing"):
-            example = json.loads(line)
-            formatted = format_example(example)
-            if formatted:
-                fout.write(json.dumps(formatted) + "\n")
-                kept += 1
-            else:
-                skipped += 1
+        with open(in_path) as fin, open(out_path, "w") as fout:
+            for line in tqdm(fin, desc=f"Preprocessing {split_name}"):
+                example = json.loads(line)
+                formatted = format_example(example)
+                if formatted:
+                    fout.write(json.dumps(formatted) + "\n")
+                    kept += 1
+                else:
+                    skipped += 1
 
-    print(f"Preprocessed: {kept:,} examples ({skipped:,} skipped)")
-    print(f"Output: {out_path}")
+        print(f"  {split_name}: {kept:,} kept, {skipped:,} skipped -> {out_path}")
 
-    # Show a sample
-    with open(out_path) as f:
-        sample = json.loads(f.readline())
-    print("\n--- Sample ---")
-    for msg in sample["messages"]:
-        role = msg["role"].upper()
-        content = msg["content"][:200]
-        print(f"[{role}] {content}{'...' if len(msg['content']) > 200 else ''}")
+    # Show a sample from training data
+    train_path = out_dir / "sft_train.jsonl"
+    if train_path.exists():
+        with open(train_path) as f:
+            sample = json.loads(f.readline())
+        print("\n--- Sample ---")
+        for msg in sample["messages"]:
+            role = msg["role"].upper()
+            content = msg["content"][:200]
+            print(f"[{role}] {content}{'...' if len(msg['content']) > 200 else ''}")
 
 
 if __name__ == "__main__":

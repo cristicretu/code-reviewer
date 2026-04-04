@@ -2,22 +2,13 @@
 
 Source: "Too Noisy To Learn" (Liu et al., 2025, arXiv:2502.02757)
 URL: https://zenodo.org/records/13150598
-
-The zip contains RQ1_Noisy_Classification/ with CSV files that label each
-CodeReviewer training example as "valid" or "noisy".
+File: RQ1_Noisy_Classification.zip (27 MB)
 
 Usage:
     python -m sft.data.download_labels [--out-dir data/labels]
-
-If automatic download fails (Zenodo can be slow), manually download:
-    1. Go to https://zenodo.org/records/13150598
-    2. Download RQ1_Noisy_Classification.zip (27 MB)
-    3. Place it in data/labels/
-    4. Re-run this script (it will detect and extract the zip)
 """
 
 import argparse
-import io
 import zipfile
 from pathlib import Path
 
@@ -27,10 +18,8 @@ from tqdm import tqdm
 
 DEFAULT_OUT = Path("data/labels")
 
-# Direct download link from Zenodo
-ZENODO_RECORD = "13150598"
+ZENODO_URL = "https://zenodo.org/records/13150598/files/RQ1_Noisy_Classification.zip"
 ZIP_FILENAME = "RQ1_Noisy_Classification.zip"
-ZENODO_URL = f"https://zenodo.org/records/{ZENODO_RECORD}/files/{ZIP_FILENAME}"
 
 
 def download_labels(out_dir: Path = DEFAULT_OUT) -> None:
@@ -38,17 +27,16 @@ def download_labels(out_dir: Path = DEFAULT_OUT) -> None:
     zip_path = out_dir / ZIP_FILENAME
 
     # Check if already extracted
-    extracted_dir = out_dir / "RQ1_Noisy_Classification"
-    if extracted_dir.exists() and any(extracted_dir.glob("*.csv")):
-        print(f"Labels already extracted at {extracted_dir}")
+    existing = list(out_dir.rglob("*.csv")) + list(out_dir.rglob("*.jsonl")) + list(out_dir.rglob("*.txt"))
+    if existing:
+        print(f"Labels already present ({len(existing)} files in {out_dir})")
+        for f in existing[:10]:
+            print(f"  {f.relative_to(out_dir)}")
         return
 
-    # Check if zip already downloaded (manual or previous attempt)
+    # Download
     if not zip_path.exists():
-        print(f"Downloading {ZIP_FILENAME} from Zenodo...")
-        print(f"  URL: {ZENODO_URL}")
-        print("  (This may take a minute, Zenodo can be slow)")
-
+        print(f"Downloading {ZIP_FILENAME} from Zenodo (~27 MB)...")
         resp = requests.get(ZENODO_URL, stream=True, timeout=120)
         resp.raise_for_status()
 
@@ -59,26 +47,20 @@ def download_labels(out_dir: Path = DEFAULT_OUT) -> None:
                     f.write(chunk)
                     pbar.update(len(chunk))
 
-        print(f"  Downloaded to {zip_path}")
-
     # Extract
     print(f"Extracting {zip_path}...")
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(out_dir)
 
-    # List what we got
-    csvs = list(extracted_dir.glob("**/*.csv")) if extracted_dir.exists() else []
-    if not csvs:
-        # Might have extracted to a different structure, search broadly
-        csvs = list(out_dir.glob("**/*.csv"))
+    # List contents
+    print("Extracted contents:")
+    for f in sorted(out_dir.rglob("*")):
+        if f.is_file():
+            size = f.stat().st_size
+            print(f"  {f.relative_to(out_dir)} ({size:,} bytes)")
 
-    print(f"  Extracted {len(csvs)} CSV files")
-    for csv in csvs[:5]:
-        print(f"    {csv.relative_to(out_dir)}")
-    if len(csvs) > 5:
-        print(f"    ... and {len(csvs) - 5} more")
-
-    print("Done.")
+    zip_path.unlink()
+    print("Done (zip removed).")
 
 
 if __name__ == "__main__":
