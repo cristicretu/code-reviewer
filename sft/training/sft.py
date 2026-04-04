@@ -43,12 +43,20 @@ def main():
     # --- Load model with Unsloth ---
     from unsloth import FastLanguageModel
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
+    model, processing_class = FastLanguageModel.from_pretrained(
         model_name=cfg["model"]["name"],
         max_seq_length=cfg["model"]["max_seq_length"],
         dtype=cfg["model"]["dtype"],
         load_in_4bit=cfg["model"]["load_in_4bit"],
     )
+
+    # Qwen3.5 loads as a VL model with a Processor wrapper.
+    # SFTTrainer needs the actual tokenizer, not the processor.
+    if hasattr(processing_class, "tokenizer"):
+        tokenizer = processing_class.tokenizer
+        print(f"Extracted tokenizer from {type(processing_class).__name__}")
+    else:
+        tokenizer = processing_class
 
     # --- Apply LoRA ---
     lora_cfg = cfg["lora"]
@@ -91,11 +99,6 @@ def main():
     # --- Training config ---
     tcfg = cfg["training"]
     output_dir = cfg["output"]["dir"]
-
-    # Fix TRL's broken default eos_token ('<EOS_TOKEN>' placeholder doesn't exist in vocab)
-    eos_token = tokenizer.eos_token
-    print(f"Using EOS token: {repr(eos_token)}")
-    SFTConfig.__dataclass_fields__["eos_token"].default = eos_token
 
     training_args = SFTConfig(
         output_dir=output_dir,
