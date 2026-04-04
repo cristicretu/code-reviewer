@@ -8,6 +8,9 @@ Prerequisites:
     - Run the data pipeline to produce data/processed/train.jsonl
 """
 
+# Unsloth MUST be imported before trl/transformers so it can patch them
+import unsloth  # noqa: F401
+
 import argparse
 import json
 from pathlib import Path
@@ -43,20 +46,12 @@ def main():
     # --- Load model with Unsloth ---
     from unsloth import FastLanguageModel
 
-    model, processing_class = FastLanguageModel.from_pretrained(
+    model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=cfg["model"]["name"],
         max_seq_length=cfg["model"]["max_seq_length"],
         dtype=cfg["model"]["dtype"],
         load_in_4bit=cfg["model"]["load_in_4bit"],
     )
-
-    # Qwen3.5 loads as a VL model with a Processor wrapper.
-    # SFTTrainer needs the actual tokenizer, not the processor.
-    if hasattr(processing_class, "tokenizer"):
-        tokenizer = processing_class.tokenizer
-        print(f"Extracted tokenizer from {type(processing_class).__name__}")
-    else:
-        tokenizer = processing_class
 
     # --- Apply LoRA ---
     lora_cfg = cfg["lora"]
@@ -67,8 +62,9 @@ def main():
         lora_dropout=lora_cfg["dropout"],
         target_modules=lora_cfg["target_modules"],
         bias="none",
-        use_gradient_checkpointing="unsloth",  # Unsloth optimized
+        use_gradient_checkpointing="unsloth",
         random_state=cfg["training"]["seed"],
+        max_seq_length=cfg["model"]["max_seq_length"],
     )
 
     # --- Load data ---
@@ -96,42 +92,39 @@ def main():
     train_ds = train_ds.map(formatting_func, batched=True, remove_columns=["messages"])
     val_ds = val_ds.map(formatting_func, batched=True, remove_columns=["messages"])
 
-    # --- Training config ---
+    # --- Training ---
     tcfg = cfg["training"]
     output_dir = cfg["output"]["dir"]
 
-    training_args = SFTConfig(
-        output_dir=output_dir,
-        num_train_epochs=tcfg["num_epochs"],
-        per_device_train_batch_size=tcfg["per_device_batch_size"],
-        gradient_accumulation_steps=tcfg["gradient_accumulation_steps"],
-        learning_rate=tcfg["learning_rate"],
-        lr_scheduler_type=tcfg["lr_scheduler"],
-        warmup_ratio=tcfg["warmup_ratio"],
-        weight_decay=tcfg["weight_decay"],
-        max_grad_norm=tcfg["max_grad_norm"],
-        fp16=tcfg["fp16"],
-        bf16=tcfg["bf16"],
-        seed=tcfg["seed"],
-        logging_steps=tcfg["logging_steps"],
-        save_steps=tcfg["save_steps"],
-        save_total_limit=tcfg["save_total_limit"],
-        eval_strategy="steps",
-        eval_steps=tcfg["save_steps"],
-        max_length=cfg["model"]["max_seq_length"],
-        dataset_text_field="text",
-        packing=False,
-        eos_token=None,  # Use tokenizer's default, skip TRL's broken check
-        report_to="none",  # change to "wandb" if using W&B
-    )
-
-    # --- Train ---
     trainer = SFTTrainer(
         model=model,
-        processing_class=tokenizer,
+        tokenizer=tokenizer,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        args=training_args,
+        args=SFTConfig(
+            output_dir=output_dir,
+            num_train_epochs=tcfg["num_epochs"],
+            per_device_train_batch_size=tcfg["per_device_batch_size"],
+            gradient_accumulation_steps=tcfg["gradient_accumulation_steps"],
+            learning_rate=tcfg["learning_rate"],
+            lr_scheduler_type=tcfg["lr_scheduler"],
+            warmup_steps=10,
+            weight_decay=tcfg["weight_decay"],
+            max_grad_norm=tcfg["max_grad_norm"],
+            fp16=tcfg["fp16"],
+            bf16=tcfg["bf16"],
+            seed=tcfg["seed"],
+            logging_steps=tcfg["logging_steps"],
+            save_steps=tcfg["save_steps"],
+            save_total_limit=tcfg["save_total_limit"],
+            eval_strategy="steps",
+            eval_steps=tcfg["save_steps"],
+            max_seq_length=cfg["model"]["max_seq_length"],
+            dataset_text_field="text",
+            dataset_num_proc=1,
+            optim="adamw_8bit",
+            report_to="none",
+        ),
     )
 
     print("Starting training...")
