@@ -110,7 +110,7 @@ def main():
         save_total_limit=tcfg["save_total_limit"],
         eval_strategy="steps",
         eval_steps=tcfg["save_steps"],
-        max_seq_length=cfg["model"]["max_seq_length"],
+        max_length=cfg["model"]["max_seq_length"],
         dataset_text_field="text",
         packing=True,  # Unsloth efficient packing
         report_to="none",  # change to "wandb" if using W&B
