@@ -22,7 +22,7 @@ lora:
 
 training:
   num_epochs: 3
-  per_device_batch_size: 8
+  per_device_batch_size: 32
   gradient_accumulation_steps: 1
   learning_rate: 2.0e-4
   lr_scheduler: "cosine"
