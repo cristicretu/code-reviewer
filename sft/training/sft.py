@@ -120,6 +120,9 @@ def main():
         report_to="none",  # change to "wandb" if using W&B
     )
 
+    # Force-set EOS token on config (SFTConfig ignores it in __init__)
+    training_args.eos_token = eos_token
+
     # --- Train ---
     trainer = SFTTrainer(
         model=model,
