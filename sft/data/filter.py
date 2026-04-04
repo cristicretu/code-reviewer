@@ -1,7 +1,7 @@
 """Cross-reference CodeReviewer with cleaned labels to keep only valid examples.
 
 This script:
-1. Reads the raw CodeReviewer Comment_Generation data (paired line files from Zenodo)
+1. Reads the raw CodeReviewer Comment_Generation JSONL files
 2. Reads the RQ1_Noisy_Classification labels
 3. Keeps only examples labeled as "valid"
 4. Outputs filtered data as JSONL
@@ -11,7 +11,6 @@ Usage:
 """
 
 import argparse
-import csv
 import json
 from pathlib import Path
 
@@ -24,74 +23,26 @@ DEFAULT_LABELS = Path("data/labels")
 DEFAULT_OUT = Path("data/processed")
 
 
-def find_paired_files(raw_dir: Path) -> dict[str, tuple[Path, Path]]:
-    """Find paired (source/diff, target/msg) files in the extracted data.
-
-    CodeReviewer uses paired line files where line N in source corresponds
-    to line N in target. Common naming patterns:
-    - train.source / train.target
-    - train.diff / train.msg
-    - Or nested in directories
-    """
+def find_jsonl_files(raw_dir: Path) -> dict[str, Path]:
+    """Find JSONL data files and map to split names."""
     splits = {}
-
-    # Search recursively for paired files
-    for f in sorted(raw_dir.rglob("*")):
-        if not f.is_file():
-            continue
-        name = f.name.lower()
-        stem = f.stem.lower()
-
-        # Try to identify source (diff) files
-        if any(x in name for x in [".source", ".diff", "input"]):
-            split_name = stem.split(".")[0]  # e.g., "train" from "train.source"
-            if split_name not in splits:
-                splits[split_name] = [None, None]
-            splits[split_name][0] = f
-
-        # Try to identify target (msg/comment) files
-        if any(x in name for x in [".target", ".msg", "output"]):
-            split_name = stem.split(".")[0]
-            if split_name not in splits:
-                splits[split_name] = [None, None]
-            splits[split_name][1] = f
-
-    result = {}
-    for split_name, (src, tgt) in splits.items():
-        if src and tgt:
-            result[split_name] = (src, tgt)
-        else:
-            print(f"  WARNING: incomplete pair for '{split_name}': src={src}, tgt={tgt}")
-
-    return result
-
-
-def load_paired_lines(source_path: Path, target_path: Path) -> list[dict]:
-    """Load paired line files into a list of {patch, msg} dicts."""
-    with open(source_path, encoding="utf-8", errors="replace") as f:
-        sources = f.readlines()
-    with open(target_path, encoding="utf-8", errors="replace") as f:
-        targets = f.readlines()
-
-    if len(sources) != len(targets):
-        print(f"  WARNING: line count mismatch: {len(sources)} sources vs {len(targets)} targets")
-
-    examples = []
-    for src, tgt in zip(sources, targets):
-        examples.append({
-            "patch": src.strip(),
-            "msg": tgt.strip(),
-        })
-    return examples
+    for f in sorted(raw_dir.rglob("*.jsonl")):
+        name = f.stem.lower()
+        if "train" in name:
+            splits["train"] = f
+        elif "valid" in name:
+            splits["valid"] = f
+        elif "test" in name:
+            splits["test"] = f
+    return splits
 
 
 def load_valid_indices(labels_dir: Path) -> set[int] | None:
     """Load valid example indices from RQ1_Noisy_Classification.
 
     Returns a set of indices (0-based line numbers) that are labeled valid,
-    or None if no labels are found (in which case we skip filtering).
+    or None if no labels are found.
     """
-    # Search for label files
     label_files = (
         list(labels_dir.rglob("*.csv"))
         + list(labels_dir.rglob("*.xlsx"))
@@ -131,7 +82,8 @@ def load_valid_indices(labels_dir: Path) -> set[int] | None:
         print(f"\n  Inspecting {label_file.name}:")
         print(f"    Shape: {df.shape}")
         print(f"    Columns: {list(df.columns)}")
-        print(f"    First row: {dict(df.iloc[0]) if len(df) > 0 else 'empty'}")
+        if len(df) > 0:
+            print(f"    First row: {dict(df.iloc[0])}")
 
         # Find label column
         cols_lower = {c.lower(): c for c in df.columns}
@@ -142,7 +94,6 @@ def load_valid_indices(labels_dir: Path) -> set[int] | None:
                 break
 
         if label_col is None:
-            # Check if any column has valid/noisy values
             for col in df.columns:
                 vals = df[col].astype(str).str.lower().unique()
                 if any(v in vals for v in ["valid", "noisy", "clean", "useful"]):
@@ -186,51 +137,60 @@ def filter_dataset(
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: Find and load raw data
+    # Step 1: Find JSONL files
     print("Looking for CodeReviewer data files...")
-    print(f"  Searching in: {raw_dir}")
+    splits = find_jsonl_files(raw_dir)
 
-    # List everything so we can debug
-    all_files = sorted(raw_dir.rglob("*"))
-    print(f"  Total files found: {len([f for f in all_files if f.is_file()])}")
-    for f in all_files:
-        if f.is_file():
-            print(f"    {f.relative_to(raw_dir)} ({f.stat().st_size:,} bytes)")
-
-    pairs = find_paired_files(raw_dir)
-    if not pairs:
-        print("\nERROR: Could not find paired source/target files.")
-        print("Expected files like: train.source/train.target or train.diff/train.msg")
-        print("Check the extracted contents above and update filter.py if needed.")
+    if not splits:
+        print(f"\nERROR: No JSONL files found in {raw_dir}")
+        print("Contents:")
+        for f in sorted(raw_dir.rglob("*")):
+            if f.is_file():
+                print(f"  {f.relative_to(raw_dir)}")
         raise SystemExit(1)
 
-    print(f"\nFound splits: {list(pairs.keys())}")
+    print(f"Found splits: {list(splits.keys())}")
+    for name, path in splits.items():
+        size_mb = path.stat().st_size / (1024 * 1024)
+        print(f"  {name}: {path} ({size_mb:.0f} MB)")
+
+    # Peek at schema
+    with open(next(iter(splits.values()))) as f:
+        sample = json.loads(f.readline())
+    print(f"\nData schema: {list(sample.keys())}")
+    for k, v in sample.items():
+        print(f"  {k}: {str(v)[:100]}...")
 
     # Step 2: Load labels
     print("\nLoading cleaned labels...")
     valid_indices = load_valid_indices(labels_dir)
 
-    # Step 3: Filter and save
-    for split_name, (src_path, tgt_path) in pairs.items():
-        print(f"\nProcessing '{split_name}' split...")
-        examples = load_paired_lines(src_path, tgt_path)
-        print(f"  Loaded {len(examples):,} examples")
+    # Step 3: Filter and save each split
+    for split_name, split_path in splits.items():
+        print(f"\nProcessing '{split_name}'...")
 
-        # Only filter training data (labels are for training set only)
-        if split_name == "train" and valid_indices is not None:
-            filtered = [ex for i, ex in enumerate(examples) if i in valid_indices]
-            print(f"  After filtering: {len(filtered):,} / {len(examples):,} "
-                  f"({len(filtered)/len(examples)*100:.1f}%)")
-        else:
-            filtered = examples
-            if split_name == "train" and valid_indices is None:
-                print("  WARNING: No labels found, keeping all training examples")
+        # Count lines first
+        with open(split_path) as f:
+            total = sum(1 for _ in f)
+        print(f"  Total examples: {total:,}")
+
+        # Filter
+        should_filter = split_name == "train" and valid_indices is not None
+        kept = 0
 
         out_path = out_dir / f"{split_name}.jsonl"
-        with open(out_path, "w") as f:
-            for ex in filtered:
-                f.write(json.dumps(ex) + "\n")
-        print(f"  Saved to {out_path}")
+        with open(split_path) as fin, open(out_path, "w") as fout:
+            for i, line in enumerate(tqdm(fin, total=total, desc=f"  Filtering {split_name}")):
+                if should_filter and i not in valid_indices:
+                    continue
+                fout.write(line)
+                kept += 1
+
+        if should_filter:
+            print(f"  Kept {kept:,} / {total:,} ({kept/total*100:.1f}%)")
+        else:
+            print(f"  Copied {kept:,} examples (no filtering for {split_name})")
+        print(f"  -> {out_path}")
 
     print("\nDone!")
 
