@@ -39,6 +39,8 @@ def main():
     parser.add_argument("--config", default="sft/training/config.yaml")
     parser.add_argument("--small-run", action="store_true",
                         help="Train on 1K examples for pipeline validation")
+    parser.add_argument("--max-examples", type=int, default=None,
+                        help="Limit training examples (e.g. 50000)")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -75,6 +77,10 @@ def main():
         train_ds = train_ds.select(range(min(1000, len(train_ds))))
         val_ds = val_ds.select(range(min(100, len(val_ds))))
         print(f"Small run: {len(train_ds)} train, {len(val_ds)} val")
+
+    if args.max_examples and not args.small_run:
+        train_ds = train_ds.select(range(min(args.max_examples, len(train_ds))))
+        print(f"Limited to {len(train_ds):,} training examples")
 
     print(f"Training on {len(train_ds):,} examples, validating on {len(val_ds):,}")
 
