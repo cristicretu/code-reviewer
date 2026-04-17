@@ -1,14 +1,14 @@
 import hashlib
 from loguru import logger
 from fastapi import FastAPI, HTTPException, Query
-from src.schemas import (
+from rag.schemas import (
     IngestionRequest, 
     IngestionAcknowledgement, 
     SearchQuery, 
     RetrievalResults, 
     RetrievalMatch
 )
-from src.database import repository_database_manager
+from rag.database import repository_database_manager
 
 code_reviewer_rag_api = FastAPI(
     title="Code Reviewer RAG Microservice",
@@ -151,7 +151,7 @@ async def retrieve_semantic_context(repository_id: str, query_payload: SearchQue
 
 if __name__ == "__main__":
     import uvicorn
-    from src.config_manager import settings
+    from config.config_manager import settings
     logger.info(f"Starting server on {settings.DEFAULT.HOST}:{settings.DEFAULT.PORT}")
     uvicorn.run(
         "src.main:code_reviewer_rag_api", 

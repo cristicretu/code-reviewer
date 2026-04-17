@@ -1,6 +1,6 @@
 import requests
 from loguru import logger
-from src.config_manager import settings
+from config.config_manager import settings
 
 API_URL = f"http://{settings.DEFAULT.HOST}:{settings.DEFAULT.PORT}/api/v1/ingest"
 REPO_ID = "calico-ai"

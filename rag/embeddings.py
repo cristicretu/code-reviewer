@@ -1,6 +1,6 @@
 from loguru import logger
 from chromadb.utils import embedding_functions
-from src.config_manager import settings
+from config.config_manager import settings
 
 def get_huggingface_embedding_function():
     logger.info(f"Loading embedding model: {settings.EMBEDDINGS.MODEL_NAME}")
