@@ -1,0 +1,12 @@
+default:
+  host: "0.0.0.0"
+  port: 8000
+
+chroma:
+  persist_path: "./.chroma_data"
+
+embeddings:
+  model_name: "nomic-ai/CodeRankEmbed"
+
+ingestion:
+  supported_extensions: [".py", ".md", ".ts", ".js", ".go", ".java", ".rs"]
