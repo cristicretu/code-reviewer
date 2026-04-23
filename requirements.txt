@@ -21,6 +21,11 @@ bitsandbytes>=0.43
 xformers>=0.0.26
 # Unsloth: pip install unsloth (see setup_cloud.sh)
 
+# RLHF (GRPO)
+mergekit>=0.1
+llm-blender>=0.0.2
+weave>=0.52
+
 # Evaluation
 sacrebleu>=2.4
 rouge-score>=0.1.2

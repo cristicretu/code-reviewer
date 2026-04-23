@@ -42,6 +42,9 @@ pip install code-bert-score
 # Optional: Anthropic SDK for LLM-as-judge eval
 pip install anthropic
 
+# RLHF / GRPO dependencies (needed by TRL GRPO trainer import path)
+pip install mergekit llm-blender weave
+
 # Clone repo (if not already done)
 if [ ! -d "code-reviewer" ]; then
     echo ""
@@ -65,4 +68,6 @@ echo "  6. python -m sft.data.split               # Train/val/test split"
 echo "  7. python -m sft.training.sft --small-run # Sanity check on 1K examples"
 echo "  8. python -m sft.training.sft             # Full training (~1-2 hours)"
 echo "  9. python -m sft.eval.run_eval --model outputs/sft/final"
+echo " 10. source .env    # Set ANTHROPIC_API_KEY for GRPO"
+echo " 11. python -m rlhf.training.grpo"
 echo ""
