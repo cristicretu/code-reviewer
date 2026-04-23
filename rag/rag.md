@@ -16,7 +16,7 @@ A high-performance, Dockerized RAG (Retrieval-Augmented Generation) API service 
    ```
 2. **Run the API:**
    ```bash
-   uv run uvicorn rag.main:application --reload
+   uv run uvicorn rag.main:code_reviewer_rag_api --reload
    ```
 3. **Run Tests:**
    ```bash
