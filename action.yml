@@ -73,13 +73,14 @@ runs:
         mkdir -p .chroma_data
         nohup python -m rag.main > "$RUNNER_TEMP/rag.log" 2>&1 &
         echo "Waiting for RAG service..."
-        for i in $(seq 1 60); do
+        start=$SECONDS
+        for _ in $(seq 1 60); do
           if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
-            echo "RAG ready after ${i}s"; exit 0
+            echo "RAG ready after $((SECONDS - start))s"; exit 0
           fi
           sleep 2
         done
-        echo "::error::RAG service failed to start"
+        echo "::error::RAG service failed to start after $((SECONDS - start))s"
         cat "$RUNNER_TEMP/rag.log" || true
         exit 1
 

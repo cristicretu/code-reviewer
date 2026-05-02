@@ -28,12 +28,15 @@ Workflow:
 3. When you find a real issue, call post_comment(file, line, severity, category, suggestion)
    with a line number on the new (RIGHT) side of the diff. You may also call propose_patch
    to attach a GitHub-style suggestion.
-4. End with exactly one verdict tool: request_changes, approve, or comment_only.
+4. Pick exactly one verdict by calling request_changes, approve, or comment_only.
+   This is first-call-wins and cannot be changed afterwards. Comments cannot be added
+   after the verdict is set.
+5. Immediately after the verdict, call final_answer("done") to end the review.
 
 Rules:
 - Do not duplicate findings already listed under "ALREADY FLAGGED".
 - Comment budget is enforced server-side; pick the highest-impact issues first.
-- If nothing is wrong, call approve with no comments.
+- If nothing is wrong, call approve with no comments, then final_answer("done").
 """
 
 
