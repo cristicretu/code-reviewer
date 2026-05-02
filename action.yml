@@ -58,9 +58,11 @@ runs:
       shell: bash
       run: |
         python -m pip install --upgrade pip
+        # transformers must stay on 4.x: nomic-ai/CodeRankEmbed's remote-code
+        # NomicBertModel rejects the safe_serialization kwarg added in transformers 5.x.
         pip install \
           "fastapi>=0.115,<1" "uvicorn>=0.30,<1" loguru python-dotenv dynaconf \
-          "chromadb>=0.5,<2" "sentence-transformers>=3" \
+          "chromadb>=0.5,<2" "sentence-transformers>=3,<5" "transformers>=4.41,<5" \
           requests pyyaml \
           "smolagents>=1.10" "litellm>=1.50"
 
