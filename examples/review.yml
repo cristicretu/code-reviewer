@@ -1,3 +1,9 @@
+# Drop this file into your repository at .github/workflows/ai-review.yml
+# Then add three secrets in Settings > Secrets and variables > Actions:
+#   MODEL_API_BASE  -- OpenAI-compatible endpoint hosting cretu-luca/code-reviewer-grpo
+#   MODEL_ID        -- model identifier the endpoint expects
+#   MODEL_API_KEY   -- bearer token (use any non-empty string if your endpoint is open)
+
 name: AI Code Review
 
 on:
@@ -23,9 +29,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Run AI Code Reviewer (dogfood)
-        uses: ./
+      - name: AI Code Review
+        uses: cristicretu/code-reviewer@v1
         with:
           model-api-base: ${{ secrets.MODEL_API_BASE }}
           model-id: ${{ secrets.MODEL_ID }}
           model-api-key: ${{ secrets.MODEL_API_KEY }}
+          # Optional knobs:
+          # max-agent-steps: '20'
+          # comment-budget: '10'

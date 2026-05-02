@@ -1,0 +1,121 @@
+name: 'AI Code Reviewer'
+description: 'Automated PR code review using a fine-tuned LLM, RAG over your codebase, and an agentic tool loop.'
+author: 'Messi (cristicretu/cretu-luca/greholea/gosa/hiticas)'
+branding:
+  icon: 'check-circle'
+  color: 'purple'
+
+inputs:
+  model-api-base:
+    description: 'OpenAI-compatible endpoint URL hosting the review model (e.g. a vLLM/TGI server serving cretu-luca/code-reviewer-grpo).'
+    required: true
+  model-id:
+    description: 'Model identifier the endpoint expects (e.g. cretu-luca/code-reviewer-grpo).'
+    required: true
+  model-api-key:
+    description: 'Bearer token for the model endpoint. Use any non-empty string if your endpoint does not require auth.'
+    required: false
+    default: 'dummy'
+  github-token:
+    description: 'Token used to fetch the PR and submit the review. Needs pull-requests:write.'
+    required: false
+    default: ${{ github.token }}
+  max-agent-steps:
+    description: 'Hard cap on agent tool-loop iterations.'
+    required: false
+    default: '20'
+  comment-budget:
+    description: 'Maximum number of inline review comments to post per PR.'
+    required: false
+    default: '10'
+  python-version:
+    description: 'Python version used inside the action.'
+    required: false
+    default: '3.11'
+
+runs:
+  using: composite
+  steps:
+    - name: Validate event
+      shell: bash
+      run: |
+        event="${{ github.event_name }}"
+        if [ "$event" != "pull_request" ] && [ "$event" != "pull_request_target" ]; then
+          echo "::error::AI Code Reviewer must be triggered by pull_request or pull_request_target (got: $event)."
+          exit 1
+        fi
+        if [ -z "${{ github.event.pull_request.number }}" ]; then
+          echo "::error::Missing pull_request payload."
+          exit 1
+        fi
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install agent dependencies
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install \
+          "fastapi>=0.115,<1" "uvicorn>=0.30,<1" loguru python-dotenv dynaconf \
+          "chromadb>=0.5,<2" "sentence-transformers>=3" \
+          requests pyyaml \
+          "smolagents>=1.10" "litellm>=1.50"
+
+    - name: Start RAG sidecar
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        DYNACONF_APP_PROFILE: prod
+      run: |
+        mkdir -p .chroma_data
+        nohup python -m rag.main > "$RUNNER_TEMP/rag.log" 2>&1 &
+        echo "Waiting for RAG service..."
+        for i in $(seq 1 60); do
+          if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
+            echo "RAG ready after ${i}s"; exit 0
+          fi
+          sleep 2
+        done
+        echo "::error::RAG service failed to start"
+        cat "$RUNNER_TEMP/rag.log" || true
+        exit 1
+
+    - name: Ingest target repository into RAG
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        DYNACONF_APP_PROFILE: prod
+        RAG_URL: http://localhost:8000
+        REPO_ID: ${{ github.repository }}
+        REPO_PATH: ${{ github.workspace }}
+      run: python -m rag.scripts.ingest_local
+
+    - name: Run review agent
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        PYTHONPATH: ${{ github.action_path }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        REPO_ID: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        RAG_URL: http://localhost:8000
+        API_BASE: ${{ inputs.model-api-base }}
+        MODEL_ID: ${{ inputs.model-id }}
+        OPENAI_API_KEY: ${{ inputs.model-api-key }}
+        MAX_AGENT_STEPS: ${{ inputs.max-agent-steps }}
+        COMMENT_BUDGET: ${{ inputs.comment-budget }}
+      run: python -m agentic.entrypoint
+
+    - name: Upload review artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ai-code-review
+        path: |
+          ${{ github.workspace }}/review_output.json
+          ${{ runner.temp }}/rag.log
+        if-no-files-found: ignore

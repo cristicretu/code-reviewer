@@ -12,33 +12,75 @@ We finetune our model on the [CodeReviewer dataset](https://zenodo.org/records/6
 We incorporate RAG within our agent in order to obtain more reliable answers, grounded in the codebase. 
 When integrating the agent, we chunk the repository using language-aware, recursive splitting by LangChain, which splits at class and function boundaries before falling back to lines splits. Afterwards, we generate embeddings using [nomic-ai/CodeRankEmbed](https://huggingface.co/nomic-ai/CodeRankEmbed), which we store inside a ChromaDB vector database. At query time, we embed the PR diff and use it as a query against the indexed codebase, retrieving the 5 most relevant code chunks to inject as context into the review prompt.
 
-## End-to-end pipeline
-On every PR (`opened` / `synchronize` / `reopened`), `.github/workflows/review.yml`:
-1. Spins up the RAG service (`rag/main.py`) as a sidecar.
-2. Ingests the PR head into ChromaDB via `rag/scripts/ingest_local.py`.
-3. Runs `agentic/entrypoint.py`, which fetches the diff + PR metadata via the GitHub API,
-   constructs the task prompt, and calls the smolagents `CodeAgent`.
-4. The agent buffers inline findings (`PostCommentTool` / `ProposePatchTool`) and ends
-   with `request_changes`, `approve`, or `comment_only`. All findings are submitted as a
-   single GitHub review.
+## Install in your repo (GitHub Action)
 
-### Required secrets
-| Secret | Purpose |
-| --- | --- |
-| `MODEL_API_BASE` | OpenAI-compatible endpoint hosting [`cretu-luca/code-reviewer-grpo`](https://huggingface.co/cretu-luca/code-reviewer-grpo) (e.g. vLLM `serve`, TGI, HF Inference Endpoint, Together) |
-| `MODEL_ID` | Model identifier the endpoint expects (e.g. `cretu-luca/code-reviewer-grpo`) |
-| `MODEL_API_KEY` | Bearer token for the endpoint, if any |
+This project ships as a composite GitHub Action. To wire it into any repo:
 
-`GITHUB_TOKEN` is auto-injected by Actions; the workflow asks for `pull-requests: write`.
+1. **Host the model** somewhere that exposes an OpenAI-compatible endpoint. Easiest path:
+   ```bash
+   vllm serve cretu-luca/code-reviewer-grpo --port 8001
+   # MODEL_API_BASE=http://<host>:8001/v1
+   # MODEL_ID=cretu-luca/code-reviewer-grpo
+   ```
+   ([HF Inference Endpoints](https://ui.endpoints.huggingface.co/), TGI, Together, Fireworks, Modal — anything OpenAI-compatible works.)
 
-### Hosting the model
-The RLHF'd checkpoint lives at https://huggingface.co/cretu-luca/code-reviewer-grpo. Easiest path:
-```bash
-vllm serve cretu-luca/code-reviewer-grpo --port 8001
-# then point MODEL_API_BASE=http://<host>:8001/v1 and MODEL_ID=cretu-luca/code-reviewer-grpo
-```
+2. **Add three repository secrets** under *Settings → Secrets and variables → Actions*:
+
+   | Secret | Purpose |
+   | --- | --- |
+   | `MODEL_API_BASE` | OpenAI-compatible endpoint URL hosting [`cretu-luca/code-reviewer-grpo`](https://huggingface.co/cretu-luca/code-reviewer-grpo) |
+   | `MODEL_ID` | Model identifier the endpoint expects |
+   | `MODEL_API_KEY` | Bearer token for the endpoint (use any non-empty string if open) |
+
+3. **Drop this workflow** into the consumer repo at `.github/workflows/ai-review.yml` (full copy in [`examples/review.yml`](./examples/review.yml)):
+
+   ```yaml
+   name: AI Code Review
+   on:
+     pull_request:
+       types: [opened, synchronize, reopened]
+   permissions:
+     contents: read
+     pull-requests: write
+   jobs:
+     review:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@v4
+           with:
+             ref: ${{ github.event.pull_request.head.sha }}
+             fetch-depth: 0
+         - uses: cristicretu/code-reviewer@v1
+           with:
+             model-api-base: ${{ secrets.MODEL_API_BASE }}
+             model-id: ${{ secrets.MODEL_ID }}
+             model-api-key: ${{ secrets.MODEL_API_KEY }}
+   ```
+
+That's it. On every PR open / push, the action: starts the RAG sidecar inside the runner, ingests the PR head into ChromaDB, runs the agent (which calls `semantic_search`, `search_keyword`, `get_file`, `check_history`, `run_tests`, …), buffers findings, and submits **one** batched review with inline comments + a verdict.
+
+### Action inputs
+
+| Input | Required | Default | Description |
+| --- | :-: | :-: | --- |
+| `model-api-base` | yes | — | OpenAI-compatible endpoint URL |
+| `model-id` | yes | — | Model identifier |
+| `model-api-key` | no | `dummy` | Bearer token for the endpoint |
+| `github-token` | no | `${{ github.token }}` | Token used to fetch the PR & post the review |
+| `max-agent-steps` | no | `20` | Hard cap on agent tool-loop iterations |
+| `comment-budget` | no | `10` | Max inline comments per PR |
+| `python-version` | no | `3.11` | Python used inside the action |
+
+### How it works under the hood
+
+1. Composite action installs deps, starts `rag/main.py` from the action's source.
+2. `rag/scripts/ingest_local.py` walks the consumer's checkout and batch-POSTs files into Chroma.
+3. `agentic/entrypoint.py` fetches the diff + PR metadata via the GitHub REST API, constructs a task prompt with already-flagged dedup hints, runs the smolagents `CodeAgent`.
+4. Action tools (`PostCommentTool` / `ProposePatchTool`) buffer findings into an in-memory `ReviewState`.
+5. Verdict tool (`request_changes` / `approve` / `comment_only`) plus `submit()` post one batched review via `POST /repos/{repo}/pulls/{pr}/reviews`.
 
 ### Local dry-run
+
 ```bash
 DYNACONF_APP_PROFILE=dev python -m rag.main &
 DYNACONF_APP_PROFILE=dev REPO_ID=local python -m rag.scripts.ingest_local
