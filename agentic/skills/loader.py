@@ -251,17 +251,25 @@ def format_skills_catalog(skills: Iterable[SkillEntry]) -> str:
         return ""
     lines = [
         "",
-        "STACK PLAYBOOK CATALOG",
-        "=" * 22,
+        "AVAILABLE PLAYBOOKS",
+        "=" * 19,
         "",
-        "The consumer repo's manifest matched these skills. Each one is a short",
-        "playbook of framework-specific bugs a careful reviewer should check for.",
-        "Bodies are NOT loaded by default -- call `load_skill(name)` to pull a",
-        "playbook into your context only when you suspect the diff exercises it.",
-        "Do not load skills you do not need; each load consumes context budget.",
+        "Senior reviewers maintain framework-specific playbooks of bugs that",
+        "linters miss. The following match this PR's stack (detected from",
+        "package.json / pyproject / Cargo / go.mod and the diff's file types):",
         "",
     ]
     for entry in skills:
-        lines.append(f"- {entry.name}: {entry.description}")
-    lines.append("")
+        lines.append(f'  load_skill("{entry.name}")')
+        lines.append(f"      {entry.description}")
+        lines.append("")
+    lines.extend(
+        [
+            "Each playbook is roughly 70 lines. Loading the right one for this",
+            "stack early in your review typically reveals 3-5 bug classes you",
+            "would otherwise have to spot from raw code reading. A skill you do",
+            "not load does not enter your context.",
+            "",
+        ]
+    )
     return "\n".join(lines)

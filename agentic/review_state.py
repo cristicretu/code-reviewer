@@ -33,15 +33,25 @@ class ReviewState:
     def is_finalized(self) -> bool:
         return self.verdict is not None
 
-    def add_comment(self, file: str, line: int, body: str) -> bool:
+    def add_comment(self, file: str, line: int, body: str) -> str:
+        """Returns one of: 'added' | 'duplicate' | 'budget_exhausted' | 'finalized'.
+
+        Dedupe is by (file, line): a real reviewer wouldn't post two separate
+        threads on the same line, and the model has a tendency to re-emit the
+        same finding across consecutive steps.
+        """
         if self.is_finalized():
-            return False
+            return "finalized"
+        line_int = int(line)
+        for existing in self.comments:
+            if existing["path"] == file and existing["line"] == line_int:
+                return "duplicate"
         if len(self.comments) >= self.comment_budget:
-            return False
+            return "budget_exhausted"
         self.comments.append(
-            {"path": file, "line": int(line), "side": "RIGHT", "body": body}
+            {"path": file, "line": line_int, "side": "RIGHT", "body": body}
         )
-        return True
+        return "added"
 
     def set_verdict(self, verdict: str) -> bool:
         """First-call-wins. Returns True if this call set the verdict, False if it was already set or invalid."""

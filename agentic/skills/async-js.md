@@ -1,6 +1,6 @@
 ---
 name: async-js
-description: Race conditions, AbortController, missing await, unhandled rejections
+description: race conditions in user-driven fetches (need AbortController/version-id), missing await on async calls, unhandled rejections in callbacks, Promise.all short-circuit, forEach with async callbacks
 triggers:
   diff_extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs"]
 ---

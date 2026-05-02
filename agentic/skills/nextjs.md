@@ -1,6 +1,6 @@
 ---
 name: nextjs
-description: Next.js server vs client boundary, env vars, server actions, edge runtime
+description: server-vs-client component boundary, NEXT_PUBLIC_ prefix for client env vars, server actions need auth and validation, edge runtime API restrictions, missing revalidatePath after mutations
 triggers:
   package_json_dep: ["next"]
   files: ["next.config.js", "next.config.ts", "next.config.mjs"]

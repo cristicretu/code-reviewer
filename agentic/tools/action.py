@@ -23,12 +23,14 @@ class PostCommentTool(Tool):
     output_type = "string"
 
     def forward(self, file: str, line: int, severity: str, category: str, suggestion: str) -> str:
-        if REVIEW_STATE.is_finalized():
-            return _FINALIZED_HINT.format(REVIEW_STATE.verdict)
         body = f"**[{severity}/{category}]** {suggestion}"
-        ok = REVIEW_STATE.add_comment(file, line, body)
-        if not ok:
-            return f"Comment budget exhausted ({len(REVIEW_STATE.comments)} comments buffered); pick a final verdict."
+        status = REVIEW_STATE.add_comment(file, line, body)
+        if status == "finalized":
+            return _FINALIZED_HINT.format(REVIEW_STATE.verdict)
+        if status == "duplicate":
+            return f"Already buffered a comment on {file}:{line}; one comment per line. Move on or pick a verdict."
+        if status == "budget_exhausted":
+            return f"Comment budget exhausted ({len(REVIEW_STATE.comments)} buffered); pick a final verdict."
         return f"Comment buffered ({len(REVIEW_STATE.comments)}/{REVIEW_STATE.comment_budget})."
 
 
@@ -78,10 +80,12 @@ class ProposePatchTool(Tool):
     output_type = "string"
 
     def forward(self, file: str, line: int, diff: str) -> str:
-        if REVIEW_STATE.is_finalized():
-            return _FINALIZED_HINT.format(REVIEW_STATE.verdict)
         body = "Suggested change:\n```suggestion\n" + diff + "\n```"
-        ok = REVIEW_STATE.add_comment(file, line, body)
-        if not ok:
+        status = REVIEW_STATE.add_comment(file, line, body)
+        if status == "finalized":
+            return _FINALIZED_HINT.format(REVIEW_STATE.verdict)
+        if status == "duplicate":
+            return f"Already buffered a comment on {file}:{line}; one patch per line."
+        if status == "budget_exhausted":
             return "Comment budget exhausted; pick a final verdict."
         return "Patch attached."

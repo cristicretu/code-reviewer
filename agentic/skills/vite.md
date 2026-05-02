@@ -1,6 +1,6 @@
 ---
 name: vite
-description: Vite env vars, import.meta.env, build-time substitution, dev vs prod
+description: VITE_* env-prefix gotcha (non-prefixed vars are undefined in the browser), hardcoded fallback URLs masking misconfig, build-time vs runtime env substitution, public/ vs imported assets
 triggers:
   package_json_dep: ["vite"]
   files: ["vite.config.ts", "vite.config.js", "vite.config.mjs"]

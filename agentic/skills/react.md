@@ -1,6 +1,6 @@
 ---
 name: react
-description: React lifecycle, hooks, closures, effects, and rendering gotchas
+description: stale closures in setInterval/setTimeout/effects, missing useEffect cleanup, deps array bugs, race conditions in async effects, controlled-vs-uncontrolled inputs, hydration mismatches
 triggers:
   package_json_dep: ["react"]
   diff_extensions: [".tsx", ".jsx"]

@@ -1,6 +1,6 @@
 ---
 name: supabase
-description: Supabase client patterns, channels, auth, RLS, anon key safety
+description: realtime channels need removeChannel cleanup, RLS gaps on new tables, service-role key in client code, .toString() vs .toISOString() for timestamptz, getUser vs getSession for auth checks
 triggers:
   package_json_dep_prefix: ["@supabase/"]
 ---
