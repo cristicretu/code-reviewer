@@ -267,8 +267,12 @@ def format_skills_catalog(skills: Iterable[SkillEntry]) -> str:
         [
             "Each playbook is roughly 70 lines. Loading the right one for this",
             "stack early in your review typically reveals 3-5 bug classes you",
-            "would otherwise have to spot from raw code reading. A skill you do",
-            "not load does not enter your context.",
+            "would otherwise have to spot from raw code reading.",
+            "",
+            "Pick at most 2-3 skills -- the ones whose domain the diff actually",
+            "touches. Loading every skill in the catalog wastes context that",
+            "could be spent on findings. Calling load_skill on the same skill",
+            "twice is a no-op (already in your context above).",
             "",
         ]
     )

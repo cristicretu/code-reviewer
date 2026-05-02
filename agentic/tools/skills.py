@@ -21,8 +21,19 @@ class LoadSkillTool(Tool):
     }
     output_type = "string"
 
+    def __init__(self):
+        super().__init__()
+        self._loaded: set[str] = set()
+
     def forward(self, name: str) -> str:
+        normalized = name.strip().lower()
+        if normalized in self._loaded:
+            return (
+                f"Skill '{name}' was already loaded earlier in this conversation; skipping. "
+                "It is still in your context above -- scroll back to consult it."
+            )
         body = load_skill_body(name)
         if body is None:
             return f"No skill named '{name}'. Check AVAILABLE PLAYBOOKS for available names."
+        self._loaded.add(normalized)
         return body
