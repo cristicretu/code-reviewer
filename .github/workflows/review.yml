@@ -1,0 +1,87 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            fastapi==0.115.* uvicorn==0.30.* loguru python-dotenv dynaconf \
+            "chromadb>=0.5,<2" "sentence-transformers>=3" \
+            requests pyyaml \
+            "smolagents>=1.10" "litellm>=1.50"
+
+      - name: Start RAG service
+        env:
+          DYNACONF_APP_PROFILE: prod
+        run: |
+          mkdir -p .chroma_data
+          nohup python -m rag.main > rag.log 2>&1 &
+          echo "Waiting for RAG service to come up..."
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/health >/dev/null; then
+              echo "RAG service ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "RAG service failed to start"; cat rag.log; exit 1
+
+      - name: Ingest base branch into RAG
+        env:
+          DYNACONF_APP_PROFILE: prod
+          RAG_URL: http://localhost:8000
+          REPO_ID: ${{ github.repository }}
+          REPO_PATH: ${{ github.workspace }}
+        run: python -m rag.scripts.ingest_local
+
+      - name: Run review agent
+        env:
+          DYNACONF_APP_PROFILE: prod
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_ID: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RAG_URL: http://localhost:8000
+          API_BASE: ${{ secrets.MODEL_API_BASE }}
+          MODEL_ID: ${{ secrets.MODEL_ID }}
+          OPENAI_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          MAX_AGENT_STEPS: "20"
+          COMMENT_BUDGET: "10"
+        run: python -m agentic.entrypoint
+
+      - name: Upload review artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-output
+          path: |
+            review_output.json
+            rag.log
+          if-no-files-found: ignore
