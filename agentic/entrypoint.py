@@ -14,6 +14,7 @@ from agentic.agent import build_agent
 from agentic.config import COMMENT_BUDGET, MAX_AGENT_STEPS
 from agentic.github_client import GitHubClient
 from agentic.review_state import REVIEW_STATE
+from agentic.skills.loader import detect_skills, format_skills_catalog
 
 
 SYSTEM_INSTRUCTIONS = """\
@@ -76,11 +77,12 @@ def _format_existing(existing: list, limit: int = 30) -> str:
     return "\n\nALREADY FLAGGED (do not duplicate):\n" + "\n".join(lines)
 
 
-def build_task_prompt(pr: dict, diff: str, existing: list) -> str:
+def build_task_prompt(pr: dict, diff: str, existing: list, skills_catalog: str = "") -> str:
     base = pr.get("base", {})
     head = pr.get("head", {})
     return (
         f"{SYSTEM_INSTRUCTIONS}\n\n"
+        f"{skills_catalog}"
         f"Repository: {base.get('repo', {}).get('full_name')}\n"
         f"PR #{pr.get('number')}: {pr.get('title')}\n"
         f"Author: @{pr.get('user', {}).get('login')}\n"
@@ -135,7 +137,18 @@ def main() -> int:
         comment_budget=COMMENT_BUDGET,
     )
 
-    task = build_task_prompt(pr, _truncate_diff(diff), existing)
+    truncated_diff = _truncate_diff(diff)
+    skills_in_catalog = detect_skills(diff=truncated_diff)
+    if skills_in_catalog:
+        logger.info(
+            "Skill catalog (agent will load_skill on demand): "
+            + ", ".join(s.name for s in skills_in_catalog)
+        )
+    else:
+        logger.info("No skills matched the consumer repo manifest.")
+    skills_catalog = format_skills_catalog(skills_in_catalog)
+
+    task = build_task_prompt(pr, truncated_diff, existing, skills_catalog)
     logger.info(
         f"Running agent (max_steps={MAX_AGENT_STEPS}, comment_budget={COMMENT_BUDGET})"
     )
