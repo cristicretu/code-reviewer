@@ -29,3 +29,8 @@ jobs:
           model-api-base: ${{ secrets.MODEL_API_BASE }}
           model-id: ${{ secrets.MODEL_ID }}
           model-api-key: ${{ secrets.MODEL_API_KEY }}
+          # Capped low so a single PR review can't blow up the demo Mac
+          # serving the model. 8 steps is enough for a focused review on a
+          # bounded diff; the agent must commit faster instead of reading
+          # every file in the repo.
+          max-agent-steps: '8'
