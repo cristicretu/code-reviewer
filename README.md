@@ -16,13 +16,7 @@ When integrating the agent, we chunk the repository using language-aware, recurs
 
 This project ships as a composite GitHub Action. To wire it into any repo:
 
-1. **Host the model** somewhere that exposes an OpenAI-compatible endpoint. Easiest path:
-   ```bash
-   vllm serve cretu-luca/code-reviewer-grpo --port 8001
-   # MODEL_API_BASE=http://<host>:8001/v1
-   # MODEL_ID=cretu-luca/code-reviewer-grpo
-   ```
-   ([HF Inference Endpoints](https://ui.endpoints.huggingface.co/), TGI, Together, Fireworks, Modal — anything OpenAI-compatible works.)
+1. **Host the model** somewhere that exposes an OpenAI-compatible endpoint. For a PoC / demo, the simplest path is to serve it on a Mac with mlx-lm and tunnel via cloudflared — see [`docs/host-on-mac.md`](./docs/host-on-mac.md). For production, [HF Inference Endpoints](https://ui.endpoints.huggingface.co/), vLLM/TGI on a GPU box, Together, Fireworks, or Modal all work.
 
 2. **Add three repository secrets** under *Settings → Secrets and variables → Actions*:
 
