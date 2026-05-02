@@ -90,6 +90,13 @@ def main() -> int:
         )
         return 2
 
+    api_base = os.environ.get("API_BASE", "")
+    if not api_base or api_base == "http://localhost:1234/v1":
+        logger.warning(
+            "API_BASE is empty or points at the LM Studio default. "
+            "Set the MODEL_API_BASE secret to your hosted endpoint or LiteLLM will fall through to the OpenAI default."
+        )
+
     pr_number_int = int(pr_number)
     client = GitHubClient(gh_token)
 
@@ -111,16 +118,18 @@ def main() -> int:
         f"Running agent (max_steps={MAX_AGENT_STEPS}, comment_budget={COMMENT_BUDGET})"
     )
 
+    agent_failed = False
     agent = build_agent()
     try:
         agent.run(task, max_steps=MAX_AGENT_STEPS)
     except Exception as e:
         logger.exception(f"Agent run failed: {e}")
+        agent_failed = True
         if not REVIEW_STATE.verdict:
             REVIEW_STATE.set_verdict("COMMENT")
 
     REVIEW_STATE.submit()
-    return 0
+    return 1 if agent_failed else 0
 
 
 if __name__ == "__main__":
