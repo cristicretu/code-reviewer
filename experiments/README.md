@@ -24,4 +24,5 @@ trying to land more than one variable; split it.
 
 | # | Title | Date | Outcome |
 | --- | --- | --- | --- |
-| [001](./001-system-prompt-checklist.md) | System prompt: bug-category checklist | 2026-05-02 | Shipped — catch rate 2/6 → 5/6, 0 false positives |
+| [001](./001-system-prompt-checklist.md) | System prompt: bug-category checklist | 2026-05-02 | Shipped — catch rate 2/6 → 5/6 on PR#1, 0 false positives |
+| [002](./002-skills-on-demand.md) | On-demand framework skills (catalog + `load_skill` tool) | 2026-05-02 | Shipped — catch rate 2/7 → 5/7 on PR#2; bugs 4 & 5 caught only after agent loaded the supabase playbook |
