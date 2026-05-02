@@ -1,0 +1,36 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Run AI Code Reviewer (dogfood)
+        uses: ./
+        with:
+          model-api-base: ${{ secrets.MODEL_API_BASE }}
+          model-id: ${{ secrets.MODEL_ID }}
+          model-api-key: ${{ secrets.MODEL_API_KEY }}
+          # Capped low so a single PR review can't blow up the demo Mac
+          # serving the model. 8 steps is enough for a focused review on a
+          # bounded diff; the agent must commit faster instead of reading
+          # every file in the repo.
+          max-agent-steps: '8'

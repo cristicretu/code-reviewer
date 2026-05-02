@@ -15,7 +15,7 @@ async def verify_service_health():
     return {"status": "active"}
 
 @router.post(
-    "/api/v1/ingest/{repository_id}", 
+    "/api/v1/ingest/{repository_id:path}",
     response_model=IngestionAcknowledgement
 )
 async def ingest_repository_snippets(repository_id: str, payload: IngestionRequest):
@@ -39,7 +39,7 @@ async def delete_repository_file_endpoint(repository_id: str, path: str = Query(
         raise HTTPException(status_code=500, detail=str(error))
 
 @router.post(
-    "/api/v1/retrieve/{repository_id}", 
+    "/api/v1/retrieve/{repository_id:path}",
     response_model=RetrievalResults
 )
 async def retrieve_semantic_context_endpoint(repository_id: str, query_payload: SearchQuery):

@@ -14,14 +14,19 @@ class SemanticSearchTool(Tool):
     output_type = "string"
 
     def forward(self, query: str, k: int = 10) -> str:
-        rag_url = os.environ.get("RAG_URL", "http://localhost:8000")
+        rag_url = os.environ.get("RAG_URL", "http://localhost:8000").rstrip("/")
         repo_id = os.environ.get("REPO_ID", "default_repo")
+        k = max(1, min(int(k), 20))
         try:
-            response = requests.post(f"{rag_url}/retrieve/{repo_id}", json={"query": query, "max_results": k})
+            response = requests.post(
+                f"{rag_url}/api/v1/retrieve/{repo_id}",
+                json={"query": query, "max_results": k},
+                timeout=30,
+            )
             response.raise_for_status()
             return str(response.json())
         except Exception as e:
-            return str(e)
+            return f"semantic_search failed: {e}"
 
 class SearchKeywordTool(Tool):
     name = "search_keyword"
