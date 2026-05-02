@@ -58,6 +58,8 @@ runs:
       shell: bash
       run: |
         python -m pip install --upgrade pip
+        # CPU-only torch first; without this pip pulls ~2 GB of CUDA wheels on the CPU runner.
+        pip install --index-url https://download.pytorch.org/whl/cpu torch
         # transformers must stay on 4.x: nomic-ai/CodeRankEmbed's remote-code
         # NomicBertModel rejects the safe_serialization kwarg added in transformers 5.x.
         pip install \
