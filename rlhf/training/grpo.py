@@ -1,137 +1,100 @@
-"""GRPO post-training for the code review LoRA adapter.
-
-Uses Claude (Haiku) as an LLM-as-judge reward signal via the Anthropic API.
-
-Run:
-    python -m rlhf.training.grpo
-    python -m rlhf.training.grpo --smoke-test
-"""
-
-import argparse
+import anthropic 
+import yaml
+import time
 import json
 import os
-import time
+import concurrent.futures as futures
 
-import yaml
+from unsloth import FastLanguageModel
+from trl import GRPOConfig, GRPOTrainer
+from anthropic.types import TextBlock
 from datasets import Dataset
+from functools import partial
 
+JUDGE_PROMPT = """\
+<context>
+You are evaluating an automated code review comment on a code diff.
+</context>
 
-def _ensure_transformers_cache_symbol() -> None:
-    """
-    TRL's GRPO import path can pull in llm_blender, which expects
-    `transformers.utils.hub.TRANSFORMERS_CACHE` (removed in Transformers v5).
-    Patch the symbol before importing TRL.
-    """
-    try:
-        import transformers.utils.hub as hub  # type: ignore
-    except ModuleNotFoundError:
-        return
+<code-diff>
+```
+{diff}
+```
+</code-diff>
 
-    if hasattr(hub, "TRANSFORMERS_CACHE"):
-        return
+<review-comment>
+{comment}
+</review-comment>
 
-    cache = os.environ.get("TRANSFORMERS_CACHE")
-    if not cache:
-        try:
-            from huggingface_hub.constants import HF_HUB_CACHE  # type: ignore
+<scoring>
+Score the comment from 1 to 5 based solely on technical correctness and specificity. Length, tone, and confidence do not affect the score.
 
-            cache = HF_HUB_CACHE
-        except Exception:
-            cache = os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+5 — Identifies a real issue that exists in the diff, pinpoints the exact location, explains why it is a problem, and suggests a concrete fix.
+4 — Identifies a real issue but is vague about location, cause, or fix.
+3 — Partially correct: the issue exists but the explanation or fix is incomplete or slightly wrong.
+2 — Generic observation that could apply to any diff; adds no value specific to this code.
+1 — Factually wrong, refers to code not present in the diff, or is toxic.
+</scoring>
 
-    setattr(hub, "TRANSFORMERS_CACHE", cache)
+<task>
+Respond with a single integer (1–5) and nothing else.
+</task>
+"""
 
+_JUDGE_POOL = futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="judge")
 
 def load_config(path: str = "rlhf/training/grpo_config.yaml") -> dict:
     with open(path) as f:
         return yaml.safe_load(f)
 
-
-JUDGE_PROMPT = """\
-You are evaluating an automated code review comment.
-
-## Code Diff
-```
-{diff}
-```
-
-## Review Comment
-{comment}
-
-## Task
-Score this review comment from 1 to 5:
-5 = identifies a real issue precisely, explains it clearly, suggests a concrete fix
-4 = mostly correct with minor vagueness
-3 = partially useful but missing key detail or slightly off
-2 = vague or generic, could apply to any diff
-1 = wrong, hallucinated a non-existent problem, or toxic
-
-Respond with a single integer (1-5) and nothing else."""
-
-
-def judge_completion(
-    diff: str,
-    comment: str,
-    client,
-    judge_model: str,
-    judge_sleep: float,
-) -> float:
-    try:
-        import anthropic  # type: ignore
-    except ModuleNotFoundError as e:
-        raise SystemExit(
-            "ERROR: Missing dependency 'anthropic'. Install with: pip install anthropic"
-        ) from e
-
+def get_judge_score(diff, comment, client, judge_model, judge_sleep, max_attempts=4):
     prompt = JUDGE_PROMPT.format(diff=diff, comment=comment)
-    for attempt in range(3):
+    for attempt in range(max_attempts):
         try:
             response = client.messages.create(
-                model=judge_model,
-                max_tokens=16,
+                model=judge_model, max_tokens=16,
                 messages=[{"role": "user", "content": prompt}],
             )
-            score = float(response.content[0].text.strip())
+            block = response.content[0]
+            if not isinstance(block, TextBlock):
+                return 1.0
+            try:
+                score = float(block.text.strip())
+            except ValueError:
+                return 1.0
             time.sleep(judge_sleep)
-            return max(1.0, min(5.0, score))
-        except (ValueError, IndexError):
-            return 1.0
+            
+            word_count = len(comment.split())
+            penalty = min(0.5, max(0.0, (word_count - 100) / 100) * 0.5)
+
+            return max(1.0, min(5.0, score) - penalty)
+
         except anthropic.RateLimitError:
-            wait = 2**attempt * 5
-            print(f"\n  Rate limit — waiting {wait}s...")
-            time.sleep(wait)
+            time.sleep(2 ** attempt * 5)
+        except (anthropic.APITimeoutError, anthropic.APIConnectionError, anthropic.InternalServerError):
+            time.sleep(2 ** attempt * 2)
     return 1.0
 
+def get_reward_fn(completions, prompts, client, judge_model, judge_sleep, **kwargs):
+    jobs = [
+        _JUDGE_POOL.submit(get_judge_score, p, c, client, judge_model, judge_sleep)
+        for p, c in zip(prompts, completions)
+    ]
+    return [j.result() for j in jobs]
 
-def make_reward_fn(judge_model: str, judge_sleep: float):
-    try:
-        import anthropic  # type: ignore
-    except ModuleNotFoundError as e:
-        raise SystemExit(
-            "ERROR: Missing dependency 'anthropic'. Install with: pip install anthropic"
-        ) from e
-
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
-
-    def reward_fn(completions, prompts, **kwargs):
-        return [
-            judge_completion(prompt, completion, client, judge_model, judge_sleep)
-            for prompt, completion in zip(prompts, completions)
-        ]
-
-    return reward_fn
-
-
-def load_prompt_dataset(path: str, tokenizer, max_samples: int | None = None) -> Dataset:
+def load_dataset(path: str, tokenizer, max_samples: int | None) -> Dataset:
     examples: list[dict] = []
+
     with open(path) as f:
         for line in f:
             ex = json.loads(line)
+
             prompt = tokenizer.apply_chat_template(
                 ex["messages"][:2],
                 tokenize=False,
                 add_generation_prompt=True,
             )
+
             examples.append({"prompt": prompt})
 
     if max_samples:
@@ -140,100 +103,56 @@ def load_prompt_dataset(path: str, tokenizer, max_samples: int | None = None) ->
     print(f"Loaded {len(examples):,} prompts from {path}")
     return Dataset.from_list(examples)
 
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="GRPO post-training for code review LoRA")
-    parser.add_argument("--config", default="rlhf/training/grpo_config.yaml")
-    args = parser.parse_args()
-
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise SystemExit("ERROR: ANTHROPIC_API_KEY is not set. See .env.example.")
+        raise SystemExit("ERROR: ANTHROPIC_API_KEY is not set.")
 
-    # Unsloth must be imported before transformers/trl/peft for full patching.
-    from unsloth import FastLanguageModel
+    config = load_config()
 
-    _ensure_transformers_cache_symbol()
-    from trl import GRPOConfig, GRPOTrainer
+    model_config = config["model"]
+    data_config = config["data"]
+    train_config = config["training"]
+    judge_config = config["judge"]
+    output_config = config["output"]
 
-    cfg = load_config(args.config)
-    model_cfg = cfg["model"]
-    lora_cfg = cfg["lora"]
-    data_cfg = cfg["data"]
-    train_cfg = cfg["training"]
-    judge_cfg = cfg["judge"]
-    output_cfg = cfg["output"]
-
-    print(f"Loading adapter: {model_cfg['adapter']}")
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_cfg["adapter"],
-        max_seq_length=model_cfg["max_seq_length"],
+        model_name=model_config["adapter"], 
+        max_seq_length=model_config["max_seq_length"],
         dtype=None,
         load_in_4bit=True,
     )
 
-    # If the adapter repo already contains LoRA modules, Unsloth returns a PEFT model.
-    # In that case, do not attempt to add LoRA a second time.
-    already_lora = bool(getattr(model, "peft_config", None))
-    if not already_lora:
-        model = FastLanguageModel.get_peft_model(
-            model,
-            r=lora_cfg["r"],
-            lora_alpha=lora_cfg["alpha"],
-            lora_dropout=lora_cfg["dropout"],
-            target_modules=lora_cfg["target_modules"],
-            bias="none",
-            use_gradient_checkpointing="unsloth",
-            random_state=train_cfg["seed"],
-            init_lora_weights=False,
-        )
-
-    train_ds = load_prompt_dataset(
-        data_cfg["train_path"],
+    train_ds = load_dataset(
+        data_config["train_path"],
         tokenizer,
-        max_samples=data_cfg.get("max_train_samples"),
+        max_samples=data_config.get("max_train_samples"),
     )
 
-    reward_fn = make_reward_fn(
-        judge_model=judge_cfg["model"],
-        judge_sleep=judge_cfg["sleep_between_calls"],
+    client = anthropic.Anthropic()
+
+    reward_fn = partial(
+        get_reward_fn,
+        client=client,
+        judge_model=judge_config["model"],
+        judge_sleep=judge_config["sleep_between_calls"],
     )
 
     grpo_args = GRPOConfig(
-        output_dir=output_cfg["dir"],
-        num_train_epochs=train_cfg["num_train_epochs"],
-        per_device_train_batch_size=train_cfg["per_device_batch_size"],
-        gradient_accumulation_steps=train_cfg["gradient_accumulation_steps"],
-        learning_rate=train_cfg["learning_rate"],
-        num_generations=train_cfg["num_generations"],
-        temperature=train_cfg["temperature"],
-        max_prompt_length=train_cfg["max_prompt_length"],
-        max_completion_length=train_cfg["max_new_tokens"],
-        logging_steps=output_cfg["logging_steps"],
-        save_steps=output_cfg["save_steps"],
-        seed=train_cfg["seed"],
+        output_dir=output_config["dir"],
+        num_train_epochs=train_config["num_train_epochs"],
+        per_device_train_batch_size=train_config["per_device_batch_size"],
+        gradient_accumulation_steps=train_config["gradient_accumulation_steps"],
+        learning_rate=train_config["learning_rate"],
+        num_generations=train_config["num_generations"],
+        temperature=train_config["temperature"],
+        max_prompt_length=train_config["max_prompt_length"],
+        max_completion_length=train_config["max_new_tokens"],
+        logging_steps=output_config["logging_steps"],
+        save_steps=output_config["save_steps"],
+        seed=train_config["seed"],
         bf16=True,
-        report_to=output_cfg.get("report_to", "none"),
+        report_to=output_config.get("report_to", "none"),
     )
-
-    # TRL GRPO expects this attribute on some model classes.
-    # With PEFT wrappers, it may be missing; add a minimal dict to satisfy TRL.
-    def _ensure_warnings_issued(m) -> None:
-        try:
-            getattr(m, "warnings_issued")
-            return
-        except AttributeError:
-            pass
-        try:
-            setattr(m, "warnings_issued", {})
-        except Exception:
-            return
-
-    _ensure_warnings_issued(model)
-    try:
-        base = model.get_base_model()
-        _ensure_warnings_issued(base)
-    except Exception:
-        pass
 
     trainer = GRPOTrainer(
         model=model,
@@ -243,28 +162,18 @@ def main() -> None:
         processing_class=tokenizer,
     )
 
-    print("\nStarting GRPO training...")
-    print(f"  Prompts:     {len(train_ds):,}")
-    print(f"  Generations: {train_cfg['num_generations']} per prompt")
-    print(f"  Judge:       {judge_cfg['model']}")
-    print(f"  Output:      {output_cfg['dir']}\n")
-
     trainer.train()
 
-    final_dir = f"{output_cfg['dir']}/final"
-    print(f"\nSaving adapter to {final_dir}...")
+    final_dir = f"{output_config['dir']}/final"
+
     model.save_pretrained(final_dir)
     tokenizer.save_pretrained(final_dir)
 
-    hub_model_id = os.environ.get("GRPO_HUB_MODEL_ID") or output_cfg.get("hub_model_id")
+    hub_model_id = os.environ.get("GRPO_HUB_MODEL_ID") or output_config.get("hub_model_id")
     if hub_model_id:
         print(f"Pushing to Hub: {hub_model_id}")
         model.push_to_hub(hub_model_id)
         tokenizer.push_to_hub(hub_model_id)
 
-    print("Done.")
-
-
 if __name__ == "__main__":
     main()
-
