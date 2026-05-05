@@ -1,16 +1,25 @@
 """
 Quantize cretu-luca/code-reviewer-grpo to 4-bit MLX for local eval on Apple Silicon.
 
-The HF repo is a PEFT LoRA adapter on top of a Qwen base. We:
-  1. Download the adapter
-  2. Read base_model_name_or_path from adapter_config.json
-  3. Load base + adapter on CPU, merge_and_unload, save merged HF checkpoint
-  4. Convert to MLX with q4 (or q8) quantization
+Why this script does NOT call peft.merge_and_unload:
+  Loading Qwen3.5-9B in fp16 on CPU costs ~18GB. peft.merge_and_unload then
+  needs to write a fp16 state_dict to disk while the model is still resident,
+  which on a 24GB M4 Pro trips macOS jetsam and the process is killed silently
+  during "Writing model shards" (you see a leaked-semaphore warning at exit).
 
-Usage:
-    python quantize_mlx.py
-    python quantize_mlx.py --bits 8           # only on a 48GB Mac
-    python quantize_mlx.py --upload <hf-repo>  # optional: push the MLX model back
+  mlx-lm's fuse path avoids this: weights are loaded as MLX arrays which are
+  lazy / mmapped, and the fuse step rewrites layer-by-layer. Peak RAM ~8-10GB.
+
+Pipeline:
+  1. Download the PEFT adapter from HF
+  2. mlx_lm.convert: HF base -> MLX bf16 (streaming)
+  3. mlx_lm.fuse: bake the PEFT adapter into the MLX base
+  4. mlx_lm.convert: quantize the fused model to q4 (or q8)
+
+Run:
+    python quantize/quantize_mlx.py
+    python quantize/quantize_mlx.py --bits 8           # only on a 48GB Mac
+    python quantize/quantize_mlx.py --upload <hf-repo>
 """
 
 from __future__ import annotations
@@ -18,6 +27,8 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
@@ -25,39 +36,39 @@ from huggingface_hub import snapshot_download
 GRPO_REPO = "cretu-luca/code-reviewer-grpo"
 
 
-def merge_adapter(base_id: str, adapter_dir: Path, out_dir: Path) -> Path:
-    import torch
-    from peft import PeftModel
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    print(f"[merge] base={base_id}  adapter={adapter_dir}")
-    base = AutoModelForCausalLM.from_pretrained(
-        base_id,
-        torch_dtype=torch.float16,
-        device_map="cpu",
-        low_cpu_mem_usage=True,
-    )
-    model = PeftModel.from_pretrained(base, adapter_dir).merge_and_unload()
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(out_dir, safe_serialization=True)
-    AutoTokenizer.from_pretrained(base_id).save_pretrained(out_dir)
-    print(f"[merge] wrote merged model to {out_dir}")
-    return out_dir
+def run(*args: str) -> None:
+    print(f"[run] {' '.join(args)}")
+    subprocess.run([sys.executable, "-m", *args], check=True)
 
 
-def quantize_to_mlx(src: Path, out: Path, bits: int) -> None:
-    from mlx_lm import convert
+def convert_hf_to_mlx(hf_path: str, mlx_path: Path) -> None:
+    if mlx_path.exists():
+        print(f"[mlx] reusing {mlx_path}")
+        return
+    run("mlx_lm", "convert", "--hf-path", hf_path, "--mlx-path", str(mlx_path))
 
+
+def fuse_adapter(base_mlx: Path, adapter_dir: Path, out: Path) -> None:
     if out.exists():
         shutil.rmtree(out)
-    print(f"[mlx] converting {src} -> {out} (q{bits}, group_size=64)")
-    convert(
-        hf_path=str(src),
-        mlx_path=str(out),
-        quantize=True,
-        q_bits=bits,
-        q_group_size=64,
+    run(
+        "mlx_lm", "fuse",
+        "--model", str(base_mlx),
+        "--adapter-path", str(adapter_dir),
+        "--save-path", str(out),
+    )
+
+
+def quantize_mlx(src: Path, out: Path, bits: int) -> None:
+    if out.exists():
+        shutil.rmtree(out)
+    run(
+        "mlx_lm", "convert",
+        "--hf-path", str(src),
+        "--mlx-path", str(out),
+        "-q",
+        "--q-bits", str(bits),
+        "--q-group-size", "64",
     )
     for p in sorted(out.iterdir()):
         print(f"  {p.name:40s} {p.stat().st_size / (1024**2):8.1f} MB")
@@ -94,12 +105,17 @@ def main() -> None:
 
     adapter_dir = args.work / "grpo-adapter"
     print(f"[fetch] {GRPO_REPO} -> {adapter_dir}")
-    snapshot_download(repo_id=GRPO_REPO, local_dir=adapter_dir, local_dir_use_symlinks=False)
+    snapshot_download(repo_id=GRPO_REPO, local_dir=adapter_dir)
 
     base_id = json.loads((adapter_dir / "adapter_config.json").read_text())["base_model_name_or_path"]
-    merged = merge_adapter(base_id, adapter_dir, args.work / "grpo-merged")
+    print(f"[base] {base_id}")
 
-    quantize_to_mlx(merged, out_dir, args.bits)
+    base_mlx = args.work / "base-mlx-bf16"
+    fused_mlx = args.work / "grpo-fused-mlx"
+
+    convert_hf_to_mlx(base_id, base_mlx)
+    fuse_adapter(base_mlx, adapter_dir, fused_mlx)
+    quantize_mlx(fused_mlx, out_dir, args.bits)
 
     if not args.no_smoke:
         smoke_test(out_dir)
