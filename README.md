@@ -32,11 +32,15 @@ Available tools (`agentic/tools/`):
 
 `agentic/review_state.py:ReviewState` buffers the comments, drops any second comment on the same `(file, line)`, enforces `comment-budget` (default 10), and at the end of the run sends one `POST /repos/{repo}/pulls/{pr}/reviews` with all comments and the chosen verdict.
 
+## Local quantization for Apple Silicon
+
+For local evaluation on a Mac (the post-RLHF model is too large to run unquantized on a 24GB M4 Pro), [`quantize/quantize.py`](./quantize/quantize.py) produces a 4-bit GGUF using llama.cpp's upstream toolchain. The pipeline is `convert_hf_to_gguf.py` (HF → GGUF f16) → `convert_lora_to_gguf.py` (PEFT adapter → GGUF LoRA) → `llama-export-lora` (bake adapter into base) → `llama-quantize Q4_K_M` (final ~5.2 GB GGUF). The script also stages a directory so the trained tokenizer + chat template from the GRPO repo end up baked into the GGUF metadata, not the base's. The result is served by `llama-server`, which exposes an OpenAI-compatible endpoint that drops in for `MODEL_API_BASE` with no agent code changes. Full setup, validation steps, and quant comparison are in [`docs/quantize-on-mac.md`](./docs/quantize-on-mac.md). The published quantization lives at [`cretu-luca/code-reviewer-grpo-GGUF`](https://huggingface.co/cretu-luca/code-reviewer-grpo-GGUF).
+
 ## Install in your repo (GitHub Action)
 
 This project ships as a composite GitHub Action. To wire it into any repo:
 
-1. **Host the model** somewhere that exposes an OpenAI-compatible endpoint. For a PoC / demo, the simplest path is to serve it on a Mac with mlx-lm and tunnel via cloudflared — see [`docs/host-on-mac.md`](./docs/host-on-mac.md). For production, [HF Inference Endpoints](https://ui.endpoints.huggingface.co/), vLLM/TGI on a GPU box, Together, Fireworks, or Modal all work.
+1. **Host the model** somewhere that exposes an OpenAI-compatible endpoint. For a PoC / demo, the simplest path is to serve a Q4_K_M GGUF on a Mac with `llama-server` and tunnel via cloudflared — see [`docs/quantize-on-mac.md`](./docs/quantize-on-mac.md) for the build and [`docs/host-on-mac.md`](./docs/host-on-mac.md) for the tunnel. For production, [HF Inference Endpoints](https://ui.endpoints.huggingface.co/), vLLM/TGI on a GPU box, Together, Fireworks, or Modal all work.
 
 2. **Add three repository secrets** under *Settings → Secrets and variables → Actions*:
 
