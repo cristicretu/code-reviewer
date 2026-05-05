@@ -51,11 +51,16 @@ TRAINED_TOKENIZER_FILES = (
 BASE_FILES_GLOB = ("*.safetensors", "*.safetensors.index.json", "config.json", "generation_config.json")
 
 
-def which_or_die(bin_name: str, hint: str) -> str:
+def which_or_die(bin_name: str, hint: str, *extra_dirs: Path) -> str:
+    """Find a binary on PATH, falling back to a list of additional directories."""
     p = shutil.which(bin_name)
-    if not p:
-        sys.exit(f"error: `{bin_name}` not on PATH. {hint}")
-    return p
+    if p:
+        return p
+    for d in extra_dirs:
+        candidate = d / bin_name
+        if candidate.is_file() and candidate.stat().st_mode & 0o111:
+            return str(candidate)
+    sys.exit(f"error: `{bin_name}` not on PATH. {hint}")
 
 
 def run(*args) -> None:
@@ -104,8 +109,16 @@ def main() -> None:
     ap.add_argument("--keep-intermediate", action="store_true")
     args = ap.parse_args()
 
-    quantize_bin = which_or_die("llama-quantize", "brew install llama.cpp")
-    export_lora_bin = which_or_die("llama-export-lora", "brew install llama.cpp")
+    # Homebrew's llama.cpp formula ships llama-quantize and llama-server but
+    # not llama-export-lora. Fall back to a local cmake build under llama-src.
+    local_build_bin = args.llama_src / "build" / "bin"
+    quantize_bin = which_or_die("llama-quantize", "brew install llama.cpp", local_build_bin)
+    export_lora_bin = which_or_die(
+        "llama-export-lora",
+        f"build it: cmake -S {args.llama_src} -B {args.llama_src}/build -DGGML_METAL=ON "
+        f"&& cmake --build {args.llama_src}/build --target llama-export-lora -j",
+        local_build_bin,
+    )
 
     convert_hf_py = args.llama_src / "convert_hf_to_gguf.py"
     convert_lora_py = args.llama_src / "convert_lora_to_gguf.py"
