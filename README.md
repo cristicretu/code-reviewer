@@ -110,3 +110,89 @@ GITHUB_TOKEN=ghp_... REPO_ID=cristicretu/code-reviewer PR_NUMBER=3 \
 
 ## Team
 Name of the team is Messi. Members are (alphabetically) Cretu Cristian, Cretu Luca, Greholea Denis, Gosa Bogdan, Hiticas Paul.
+
+## Results
+Evaluation of the `code-reviewer-4-bit` model running inside a `smolagents` CodeAgent pipeline on 15 examples from the CodeReviewer test set.
+
+**Judge model:** `gemma-4-e4b-it` (local, OpenAI-compatible)  
+**Agent model:** `code-reviewer-4-bit` (Qwen3.5-9B QLoRA, 4-bit quantised)  
+**Max agent steps:** 20  
+**Test examples:** 15
+
+---
+
+## Metric Summary
+
+| Metric | Mean Score | Pass Rate | Threshold |
+|---|---|---|---|
+| Task Completion | 0.85 | 13 / 15 (86.7%) | ≥ 0.50 |
+| Task Correctness | 0.85 | 13 / 15 (86.7%) | ≥ 0.50 |
+| Step Efficiency | 0.82 | 12 / 15 (80.0%) | ≥ 0.50 |
+
+---
+
+## Metric Definitions
+
+**Task Completion** *(programmatic)*  
+Binary: did the agent set a valid verdict (`APPROVE` / `REQUEST_CHANGES` / `COMMENT`) before exhausting the step budget? Score is 1.0 on success, 0.0 on budget exhaustion.
+
+**Task Correctness** *(LLM-judged, Gemma)*  
+GEval rubric aligned with the RLHF reward function from `rlhf/training/grpo.py`:
+1. Is the flagged issue real and present in the diff? (no hallucination)
+2. Does the comment pinpoint the exact location (file, line)?
+3. Does it explain *why* the code is problematic?
+4. Does it propose a concrete, actionable fix?
+5. Is it specific to this diff, not a generic observation?
+
+**Step Efficiency** *(programmatic)*  
+Measures how efficiently the agent used its tool-call budget. Score decays linearly above the cap (10 calls). Zero if no verdict is reached.
+
+```
+score = 1.0 - 0.5 × (n_calls - 1) / 9    if verdict set and n_calls ≤ 10
+score = 0.5 × 10 / n_calls                if verdict set and n_calls > 10
+score = 0.0                                if no verdict
+score = 0.3                                if verdict with 0 tool calls
+```
+
+---
+
+## Tool Call Statistics
+
+| Statistic | Value |
+|---|---|
+| Total tool calls across all examples | 24 |
+| Average tool calls per example | 1.60 |
+| Average tool calls (completed runs only) | 1.85 |
+| Min tool calls | 0 |
+| Max tool calls | 5 |
+
+### Tool Call Distribution
+
+| Tool calls | Examples |
+|---|---|
+| 0 | 2 |
+| 1 | 8 |
+| 2 | 3 |
+| 3 | 1 |
+| 5 | 1 |
+
+---
+
+## Verdict Distribution
+
+| Verdict | Count | % |
+|---|---|---|
+| APPROVE | 10 | 66.7% |
+| REQUEST_CHANGES | 1 | 6.7% |
+| COMMENT | 2 | 13.3% |
+| No verdict (budget exhausted) | 2 | 13.3% |
+
+---
+
+## Analysis
+
+**Task Completion** is strong at 86.7% — 13 of 15 examples reached a valid verdict within the step budget. The 2 that exhausted the step cap share a pattern: the model generated prose review text rather than Python tool calls, leaving smolagents with nothing executable to run.
+
+**Task Correctness** scores highest on the `REQUEST_CHANGES` and `COMMENT` examples, where the agent posted specific inline comments with file, line, and explanation before setting a verdict. The 10 `APPROVE` runs score well when the agent used at least one retrieval call to confirm no issues existed; the 2 budget-exhausted runs drag the tail of the distribution down.
+
+**Step Efficiency** is highest for examples completing in 1–2 tool calls (score ≈ 0.94–1.0). The 3-call example scores 0.89 and the 5-call example scores 0.78, both well within the cap. The 2 zero-call completions (APPROVE with no investigation) score 0.3, forming the lower end of the distribution.
