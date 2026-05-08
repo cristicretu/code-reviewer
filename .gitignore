@@ -244,3 +244,4 @@ runs/
 .env
 .env.*
 secrets.yaml
+.deepeval/
