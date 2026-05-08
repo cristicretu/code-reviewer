@@ -245,3 +245,8 @@ runs/
 .env.*
 secrets.yaml
 .deepeval/
+
+# JavaScript
+node_modules/
+package-lock.json
+package.json
