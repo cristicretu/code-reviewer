@@ -13,20 +13,24 @@ import sys
 from pathlib import Path
 
 from sft.eval.metrics import compute_metrics
+from sft.eval.defect_metrics import compute_hallucination_rate, compute_defect_f1
 
 
-def load_predictions(path: str, max_examples: int | None = None) -> tuple[list[str], list[str]]:
+def load_predictions(path: str, max_examples: int | None = None) -> tuple[list[str], list[str], list[str]]:
     preds = []
     refs = []
+    diffs = []
     with open(path) as f:
         for line in f:
             ex = json.loads(line.strip())
             preds.append(ex["prediction"])
             refs.append(ex["reference"])
+            diffs.append(ex["diff"])
     if max_examples:
         preds = preds[:max_examples]
         refs = refs[:max_examples]
-    return preds, refs
+        diffs = diffs[:max_examples]
+    return preds, refs, diffs
 
 
 def main() -> int:
@@ -37,23 +41,36 @@ def main() -> int:
         ("rlhf", eval_dir / "predictions_rlhf.jsonl"),
     ]
 
-    print(f"{'='*60}")
-    print(f"{'Model':<8} {'CodeBERTScore':>15} {'ChrF':>8} {'ROUGE-L':>8}")
-    print(f"{'='*60}")
+    print(f"{'='*70}")
+    print(f"{'Model':<8} {'CBS':>8} {'ChrF':>7} {'ROUGE':>7} {'DefectF1':>8} {'Halluc%':>8}")
+    print(f"{'='*70}")
 
     results = {}
     for label, path in variants:
         if not path.exists():
             print(f"{label:<8} {'(no predictions)':>15}")
             continue
-        preds, refs = load_predictions(str(path))
+        preds, refs, diffs = load_predictions(str(path))
         print(f"{label:<8}  ({len(preds)} examples)...", end="", flush=True)
+
         scores = compute_metrics(preds, refs)
+        defective = compute_defect_f1(preds, refs)
+        halluc = compute_hallucination_rate(preds, diffs)
+
         cbs = scores.get("code_bert_score", 0) or 0
         chrf = scores.get("chrf", 0)
         rl = scores.get("rouge_l", 0)
-        print(f"\r{label:<8}  {cbs:>15.4f} {chrf:>8.2f} {rl:>8.4f}")
-        results[label] = {"code_bert_score": cbs, "chrf": chrf, "rouge_l": rl}
+        f1 = defective["defect_f1"]
+        hal = halluc
+
+        print(f"\r{label:<8}  {cbs:>8.4f} {chrf:>7.2f} {rl:>7.4f} {f1:>8.4f} {hal:>8.2%}")
+        results[label] = {
+            "code_bert_score": cbs, "chrf": chrf, "rouge_l": rl,
+            "defect_f1": f1,
+            "defect_precision": defective["defect_precision"],
+            "defect_recall": defective["defect_recall"],
+            "hallucination_rate": hal,
+        }
 
     results_path = eval_dir / "lite_results.json"
     with open(results_path, "w") as f:

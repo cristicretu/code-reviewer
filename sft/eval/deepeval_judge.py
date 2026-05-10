@@ -19,7 +19,7 @@ import os
 import sys
 from pathlib import Path
 
-os.environ.setdefault("LOCAL_MODEL_NAME", "qwen3:14b")
+os.environ.setdefault("LOCAL_MODEL_NAME", "qwen3:8b")
 os.environ.setdefault("LOCAL_MODEL_API_KEY", "ollama")
 os.environ.setdefault("LOCAL_MODEL_BASE_URL", "http://localhost:11434/v1")
 
@@ -109,6 +109,7 @@ def main() -> int:
             ],
             strict_mode=False,
             verbose_mode=True,
+            async_mode=False,
         ),
         "specificity": GEval(
             name="Specificity",
@@ -119,6 +120,7 @@ def main() -> int:
             ],
             strict_mode=False,
             verbose_mode=True,
+            async_mode=False,
         ),
         "actionability": GEval(
             name="Actionability",
@@ -129,9 +131,11 @@ def main() -> int:
             ],
             strict_mode=False,
             verbose_mode=True,
+            async_mode=False,
         ),
         "answer_relevancy": AnswerRelevancyMetric(
             verbose_mode=True,
+            async_mode=False,
         ),
     }
 
