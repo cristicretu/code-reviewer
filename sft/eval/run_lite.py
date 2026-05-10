@@ -13,7 +13,12 @@ import sys
 from pathlib import Path
 
 from sft.eval.metrics import compute_metrics
-from sft.eval.defect_metrics import compute_hallucination_rate, compute_defect_f1
+from sft.eval.defect_metrics import (
+    compute_hallucination_rate,
+    compute_defect_f1,
+    compute_coherence,
+    compute_toxicity_rate,
+)
 
 
 def load_predictions(path: str, max_examples: int | None = None) -> tuple[list[str], list[str], list[str]]:
@@ -41,9 +46,9 @@ def main() -> int:
         ("rlhf", eval_dir / "predictions_rlhf.jsonl"),
     ]
 
-    print(f"{'='*70}")
-    print(f"{'Model':<8} {'CBS':>8} {'ChrF':>7} {'ROUGE':>7} {'DefectF1':>8} {'Halluc%':>8}")
-    print(f"{'='*70}")
+    print(f"{'='*80}")
+    print(f"{'Model':<8} {'CBS':>8} {'ChrF':>7} {'ROUGE':>7} {'DefF1':>7} {'Hall%':>7} {'Coher':>6} {'Toxic%':>7}")
+    print(f"{'='*80}")
 
     results = {}
     for label, path in variants:
@@ -56,20 +61,26 @@ def main() -> int:
         scores = compute_metrics(preds, refs)
         defective = compute_defect_f1(preds, refs)
         halluc = compute_hallucination_rate(preds, diffs)
+        coherence = compute_coherence(preds)
+        toxicity = compute_toxicity_rate(preds)
 
         cbs = scores.get("code_bert_score", 0) or 0
         chrf = scores.get("chrf", 0)
         rl = scores.get("rouge_l", 0)
         f1 = defective["defect_f1"]
         hal = halluc
+        coh = coherence["coherence"]
+        tox = toxicity
 
-        print(f"\r{label:<8}  {cbs:>8.4f} {chrf:>7.2f} {rl:>7.4f} {f1:>8.4f} {hal:>8.2%}")
+        print(f"\r{label:<8}  {cbs:>8.4f} {chrf:>7.2f} {rl:>7.4f} {f1:>7.4f} {hal:>7.2%} {coh:>6.4f} {tox:>7.2%}")
         results[label] = {
             "code_bert_score": cbs, "chrf": chrf, "rouge_l": rl,
             "defect_f1": f1,
             "defect_precision": defective["defect_precision"],
             "defect_recall": defective["defect_recall"],
             "hallucination_rate": hal,
+            "coherence": coh,
+            "toxicity_rate": tox,
         }
 
     results_path = eval_dir / "lite_results.json"
