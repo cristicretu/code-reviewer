@@ -1,0 +1,42 @@
+OOD Evaluation - Run Commands
+==============================
+
+1. CLONE AND ENTER REPO
+-----------------------
+git clone <your-repo-url>
+cd code-reviewer
+
+2. INSTALL DEPENDENCIES
+-----------------------
+pip install -r requirements-ood-eval.txt
+
+3. RUN FULL EVAL (all 4 models, sequential)
+--------------------------------------------
+python -m ood_testing.run_ood_eval
+
+4. RUN SINGLE MODEL
+--------------------
+python -m ood_testing.run_ood_eval --models base
+python -m ood_testing.run_ood_eval --models sft
+python -m ood_testing.run_ood_eval --models rlhf
+python -m ood_testing.run_ood_eval --models quantized
+
+5. QUICK SMOKE TEST (10 examples only)
+---------------------------------------
+python -m ood_testing.run_ood_eval --max-examples 10 --models base
+
+6. RESUME AFTER INTERRUPTION
+------------------------------
+python -m ood_testing.run_ood_eval --skip-existing
+
+7. RESULTS
+-----------
+Predictions:  ood_testing/predictions/predictions_<label>.jsonl
+Full results: ood_testing/ood_results.json
+
+NOTES
+-----
+- Models download from HuggingFace on first run (15-20 GB total, ~5-10 min per model)
+- base + sft + rlhf share the same base weights; load order is base → sft → rlhf → quantized
+- quantized model loads in 4-bit via bitsandbytes on CUDA
+- All Qwen3 <think>...</think> blocks are stripped before scoring

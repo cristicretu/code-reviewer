@@ -30,4 +30,5 @@ weave>=0.52
 sacrebleu>=2.4
 rouge-score>=0.1.2
 bert-score>=0.3.13
+code-bert-score>=0.4
 anthropic>=0.26
