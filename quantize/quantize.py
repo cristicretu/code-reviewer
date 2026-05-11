@@ -1,4 +1,4 @@
-"""Quantize cretu-luca/code-reviewer-grpo to GGUF (default Q4_K_M) via llama.cpp."""
+"""Quantize a PEFT/LoRA adapter to GGUF via llama.cpp."""
 
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ import sys
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
-
-GRPO_REPO = "cretu-luca/code-reviewer-grpo"
 
 TRAINED_TOKENIZER_FILES = (
     "tokenizer.json",
@@ -62,6 +60,8 @@ def stage_hf_dir(base_hf: Path, adapter_dir: Path, dst: Path) -> Path:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--model", default="cretu-luca/code-reviewer-grpo",
+                    help="HuggingFace model ID for the PEFT/LoRA adapter")
     ap.add_argument("--quant", default="Q4_K_M",
                     choices=["Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q6_K", "Q8_0"])
     ap.add_argument("--llama-src", type=Path, default=Path("./.quantize-work/llama.cpp-src"))
@@ -86,11 +86,12 @@ def main() -> None:
             sys.exit(f"missing {p}\n  git clone https://github.com/ggerganov/llama.cpp {args.llama_src}")
 
     args.work.mkdir(parents=True, exist_ok=True)
-    out_path = args.out or Path(f"./code-reviewer-grpo-{args.quant}.gguf")
+    model_name = args.model.split("/")[-1]
+    out_path = args.out or Path(f"./{model_name}-{args.quant}.gguf")
 
-    adapter_dir = args.work / "grpo-adapter"
-    print(f"[fetch] {GRPO_REPO} -> {adapter_dir}")
-    snapshot_download(repo_id=GRPO_REPO, local_dir=adapter_dir)
+    adapter_dir = args.work / f"{model_name}-adapter"
+    print(f"[fetch] {args.model} -> {adapter_dir}")
+    snapshot_download(repo_id=args.model, local_dir=adapter_dir)
     base_id = json.loads((adapter_dir / "adapter_config.json").read_text())["base_model_name_or_path"]
     print(f"[base] {base_id}")
 
@@ -105,11 +106,11 @@ def main() -> None:
     if not base_gguf.exists():
         run(sys.executable, convert_hf_py, staged, "--outtype", "f16", "--outfile", base_gguf)
 
-    lora_gguf = args.work / "grpo-lora.gguf"
+    lora_gguf = args.work / f"{model_name}-lora.gguf"
     if not lora_gguf.exists():
         run(sys.executable, convert_lora_py, adapter_dir, "--base", staged, "--outfile", lora_gguf)
 
-    fused_gguf = args.work / "grpo-fused-f16.gguf"
+    fused_gguf = args.work / f"{model_name}-fused-f16.gguf"
     if not fused_gguf.exists():
         run(export_lora_bin, "-m", base_gguf, "--lora", lora_gguf, "-o", fused_gguf)
 
