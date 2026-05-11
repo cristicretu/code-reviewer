@@ -1,7 +1,7 @@
 # cretu_testing — discriminating eval
 
-A second OOD set, calibrated to surface the gap between base and SFT/RLHF that the
-existing eval understates.
+A second OOD set + scoring pipeline, calibrated to surface the gap between base and
+SFT/RLHF that the existing eval understates.
 
 ## Why this set exists
 
@@ -22,7 +22,7 @@ you:
 5. **No multi-file diffs.** Cross-cutting bugs are where SFT's training distribution
    (real PRs) actually shines.
 
-## What's different here
+## What's different in the dataset
 
 - **Subtler bugs.** Description text deliberately avoids the obvious keyword
   (`hmac`/`timing-attack`, not "compare digest"); the bug shows itself in code intent,
@@ -37,7 +37,7 @@ you:
 - **A few multi-bug examples** to test prioritization — does the model surface the
   critical bug, or get distracted by a minor one?
 
-## Composition
+### Composition
 
 | Difficulty | N  |
 | ---------- | -- |
@@ -49,22 +49,65 @@ you:
 
 Multi-file diffs: 13. Multi-bug examples: 4.
 
-## Running
+## Two metric families
+
+Scoring is split into two sets, kept deliberately separate.
+
+### Set 1 — Bug detection (the discriminating signal)
+
+A per-bug LLM judge that answers, for each planted bug, **did the prediction identify
+this specific bug?** For clean diffs it answers the inverse: **did the prediction raise
+a substantive false alarm?**
+
+Aggregated across the dataset, this yields a real confusion matrix:
+
+|                     | judged-bug | judged-no-bug |
+| ------------------- | ---------- | ------------- |
+| **planted bug**     | TP         | FN            |
+| **clean diff**      | FP         | TN            |
+
+From which: **precision**, **recall**, **accuracy**, **F1**.
+
+This is the metric that actually moves between models. Keyword overlap can't tell
+"mentions injection vaguely" from "names the f-string on line 16 and proposes a `%s`
+placeholder fix" — the judge can.
+
+Implementation: `cretu_testing/bug_detection.py`. Backends: Gemini (free-tier paced),
+Anthropic (faster). Every judge call is cached in `judge_cache.json` keyed by
+`(backend, model_label, kind, example_idx, bug_idx, pred_hash)` so re-runs after a
+tweak only re-judge what's new.
+
+### Set 2 — Review-quality (cheap, deterministic)
+
+Heuristic metrics that don't need a judge:
+
+- **coherence** — structural quality (sentence count, length distribution, code-to-text
+  ratio, explanation-structure markers).
+- **hallucination_rate** — fraction of predictions referencing identifiers not in the
+  diff.
+- **toxicity_rate** — regex over a small toxic-language lexicon.
+
+These reuse `sft.eval.defect_metrics` so numbers are directly comparable to existing
+reports.
+
+## Pipeline
 
 ```bash
-# All four model variants
-python -m cretu_testing.run_cretu_eval
+# 1. Generate predictions (slow — model inference)
+python -m cretu_testing.run_cretu_eval --models base,sft,rlhf
 
-# Single model
-python -m cretu_testing.run_cretu_eval --models sft
+# 2. Score predictions (cheap; LLM-judge part is rate-limited)
+export GEMINI_API_KEY=...        # or ANTHROPIC_API_KEY for --backend anthropic
+python -m cretu_testing.score --models base,sft,rlhf --by-difficulty
 
-# Smoke test
-python -m cretu_testing.run_cretu_eval --max-examples 10 --models base
+# Set 2 only (no API key needed, instant)
+python -m cretu_testing.score --models base,sft,rlhf --skip-judge
 ```
 
-Predictions land in `cretu_testing/predictions/predictions_<label>.jsonl` and the
-aggregate in `cretu_testing/cretu_results.json`. Same schema as `ood_testing`, so the
-two can be compared directly.
+Outputs:
+- `cretu_testing/predictions/predictions_<label>.jsonl` — raw predictions per model
+- `cretu_testing/cretu_scores.json` — both metric families per model
+- `cretu_testing/judge_cache.json` — LLM-judge call cache (commit this to share runs)
 
 ## Rebuilding the dataset
 
