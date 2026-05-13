@@ -1,6 +1,7 @@
 import json
 from typing import Optional
 
+import requests
 from loguru import logger
 
 
@@ -108,15 +109,40 @@ class ReviewState:
                 comments=self.comments,
             )
         except Exception as e:
-            logger.warning(f"Primary submission failed ({e}); folding comments into review body and retrying.")
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            # GITHUB_TOKEN cannot submit APPROVE reviews (GitHub returns 422). Downgrade
+            # to COMMENT and keep the inline comments instead of stripping them into the body.
+            if status == 422 and verdict == "APPROVE":
+                logger.warning(
+                    "APPROVE rejected by GitHub (likely github-actions bot restriction); retrying as COMMENT."
+                )
+                try:
+                    return self.client.submit_review(
+                        repo=self.repo,
+                        pr_number=self.pr_number,
+                        commit_id=self.commit_id,
+                        event="COMMENT",
+                        body=body,
+                        comments=self.comments,
+                    )
+                except Exception as e2:
+                    logger.warning(
+                        f"COMMENT retry also failed ({e2}); folding comments into review body."
+                    )
+                    e = e2
+            else:
+                logger.warning(
+                    f"Primary submission failed ({e}); folding comments into review body and retrying."
+                )
 
+        fallback_event = "COMMENT" if verdict == "APPROVE" else verdict
         try:
             fallback_body = body + "\n\n---\n\n" + self._format_comments_in_body()
             return self.client.submit_review(
                 repo=self.repo,
                 pr_number=self.pr_number,
                 commit_id=self.commit_id,
-                event=verdict,
+                event=fallback_event,
                 body=fallback_body,
                 comments=[],
             )
