@@ -1,0 +1,1073 @@
+% =============================================================================
+% Code Reviewer: an arXiv-style technical report of the whole codebase.
+% Compile with:
+%   tectonic main.tex
+% =============================================================================
+\documentclass[11pt,a4paper]{article}
+
+% ---- packages -----------------------------------------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\usepackage{titling}
+\usepackage{titlesec}
+\usepackage{authblk}
+\usepackage{abstract}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, fit, backgrounds, shapes.geometric, calc}
+
+% ---- arXiv-ish styling --------------------------------------------------------
+\definecolor{accent}{HTML}{2E5BFF}
+\definecolor{mute}{HTML}{606E7B}
+\definecolor{soft}{HTML}{F5F6F8}
+\definecolor{code}{HTML}{1F2933}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=accent,
+  citecolor=accent,
+  urlcolor=accent,
+  pdftitle={Code Reviewer: an agentic LLM for pull-request review},
+  pdfauthor={Team Messi}
+}
+
+\setlength{\droptitle}{-3em}
+\titleformat*{\section}{\large\bfseries\sffamily}
+\titleformat*{\subsection}{\normalsize\bfseries\sffamily}
+\titleformat*{\subsubsection}{\normalsize\itshape\sffamily}
+
+\renewcommand{\abstractnamefont}{\normalfont\bfseries\sffamily}
+\renewcommand{\abstracttextfont}{\normalfont\small}
+
+\lstdefinestyle{plain}{
+  basicstyle=\ttfamily\footnotesize\color{code},
+  backgroundcolor=\color{soft},
+  frame=single,
+  framerule=0pt,
+  xleftmargin=8pt,
+  xrightmargin=8pt,
+  breaklines=true,
+  showstringspaces=false,
+  columns=fullflexible,
+}
+\lstset{style=plain}
+
+% Allow flexible spacing so long unbreakable inline-code identifiers do not
+% spill into the margin.
+\sloppy
+\emergencystretch=3em
+\hyphenpenalty=200
+\tolerance=2000
+
+% Let \url break at underscores/dots/slashes/hyphens.
+\makeatletter
+\g@addto@macro\UrlBreaks{\do\_\do\.\do\/\do\-}
+\makeatother
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+\renewcommand{\path}[1]{\texttt{\small\color{mute} #1}}
+
+% =============================================================================
+\title{\textbf{\sffamily Code Reviewer}\\[2pt]
+  \large\sffamily An agentic LLM that reviews pull requests on every push}
+
+\author[1]{Cretu Cristian}
+\author[1]{Cretu Luca}
+\author[1]{Greholea Denis}
+\author[1]{Gosa Bogdan}
+\author[1]{Hiticas Paul}
+\affil[1]{Team Messi}
+
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+We describe \emph{Code Reviewer}, an open-source pull-request review system that
+runs as a single GitHub Action. The system combines a fine-tuned 9B-parameter
+Qwen model, a per-repository retrieval-augmented generation (RAG) index, and a
+\code{smolagents}-based tool loop into one pipeline that, on every PR open or
+push, fetches the diff, indexes the head commit into a vector database,
+investigates the change with a fixed set of tools, and submits one batched
+review with inline comments and an explicit verdict
+(\textsc{request\_changes}, \textsc{approve}, or \textsc{comment}). The model
+is trained in two stages on top of \code{Qwen/Qwen3.5-9B}: a QLoRA supervised
+finetune on the Microsoft CodeReviewer Comment Generation dataset, followed by
+a GRPO~\cite{shao2024deepseekmath} stage with a Claude Haiku LLM-as-judge
+reward and an explicit length penalty. A separate quantization pipeline
+produces a 5.2\,GB \code{Q4\_K\_M} GGUF for local serving on Apple Silicon. We
+document the full architecture, training recipes, retrieval design, agent
+prompt, on-demand framework playbook system, and an end-to-end evaluation on
+the CodeReviewer test split.
+\end{abstract}
+
+% ============================================================================
+\section{Introduction}
+
+Manual pull-request review is the de-facto quality gate of modern software
+development, but it scales poorly: reviewers context-switch, comments are
+inconsistent across people and repositories, and the cycle time blocks
+merges. Generic LLM reviewers help in part but suffer from two recurring
+failures: (1) they only see the diff and hallucinate APIs that do not exist in
+the surrounding code, and (2) they cannot \emph{act} -- they cannot read
+related files, run linters, or query git history.
+
+This report documents an end-to-end alternative we built and shipped as a
+GitHub Action. The system is structured as three loosely coupled components
+(Figure~\ref{fig:overview}):
+\begin{enumerate}[leftmargin=*]
+  \item A \textbf{RAG sidecar} (\path{rag/}) that ingests the consumer
+        repository on every run into a per-repository ChromaDB collection
+        backed by \code{nomic-ai/CodeRankEmbed} embeddings.
+  \item An \textbf{agent} (\path{agentic/}) built on
+        \code{smolagents.CodeAgent} with a fixed toolbox for retrieval,
+        execution, history, framework playbooks, and review actions.
+  \item A two-stage \textbf{training pipeline}
+        (\path{sft/}, \path{rlhf/}) that produces the policy model from
+        \code{Qwen/Qwen3.5-9B}: a QLoRA SFT stage on the Microsoft
+        CodeReviewer dataset followed by a GRPO~\cite{shao2024deepseekmath}
+        stage with an LLM-as-judge reward.
+\end{enumerate}
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+  node distance=8mm and 14mm,
+  every node/.style={font=\footnotesize\sffamily},
+  box/.style={draw=mute, fill=soft, rounded corners=2pt, minimum width=32mm,
+              minimum height=8mm, align=center},
+  acc/.style={draw=accent, fill=white, rounded corners=2pt, minimum width=32mm,
+              minimum height=8mm, align=center, text=accent},
+  arr/.style={-{Latex[length=2mm]}, draw=mute}]
+  \node[box] (gh)  {GitHub PR event};
+  \node[box, right=of gh] (ckt) {checkout HEAD};
+  \node[box, right=of ckt] (rag) {RAG sidecar\\\scriptsize ingest};
+  \node[acc, below=of rag] (agent) {agent loop\\\scriptsize tools $\le$ 20 calls};
+  \node[box, left=of agent] (model) {fine-tuned\\Qwen3.5-9B};
+  \node[box, left=of model] (out)   {one batched\\PR review};
+  \draw[arr] (gh) -- (ckt);
+  \draw[arr] (ckt) -- (rag);
+  \draw[arr] (rag) -- (agent);
+  \draw[arr] (agent) -- (model);
+  \draw[arr] (model) -- (out);
+\end{tikzpicture}
+\caption{High-level flow. The Action checks out the PR head, starts the RAG
+service, ingests the head into a Chroma collection, then runs the agent
+loop. The agent buffers comments and emits one final review.}
+\label{fig:overview}
+\end{figure}
+
+The remainder of this report walks through each component in the order the
+code is organized in the repository.
+
+% ============================================================================
+\section{Repository Layout}
+
+\begin{tabular}{@{}p{0.27\textwidth}p{0.69\textwidth}@{}}
+\toprule
+\textbf{Path} & \textbf{Purpose} \\
+\midrule
+\path{action.yml}           & Composite GitHub Action entry point. \\
+\path{agentic/}             & Agent orchestration, tools, skills, review state. \\
+\path{rag/}                 & FastAPI service for ingestion and semantic retrieval. \\
+\path{sft/training/}        & QLoRA SFT trainer for \code{Qwen3.5-9B}. \\
+\path{sft/data/}            & Dataset download, filtering, preprocessing, split. \\
+\path{sft/eval/}            & Automated metrics, LLM-as-judge, defect metrics. \\
+\path{rlhf/training/}       & GRPO trainer with a Claude Haiku judge reward. \\
+\path{quantize/}            & llama.cpp-based pipeline producing a GGUF artifact. \\
+\path{config/}              & Dynaconf configuration (dev / prod profiles). \\
+\path{docs/}                & Operator runbooks (quantize, host on Mac). \\
+\path{examples/review.yml}  & Consumer-repo workflow template. \\
+\bottomrule
+\end{tabular}
+
+% ============================================================================
+\section{The GitHub Action}
+\label{sec:action}
+
+The Action is a \emph{composite} action defined in \path{action.yml}. It
+exposes seven inputs (\code{model-api-base}, \code{model-id},
+\code{model-api-key}, \code{github-token}, \code{max-agent-steps} default
+\code{20}, \code{comment-budget} default \code{10}, \code{python-version}
+default \code{3.11}) and is intended to be invoked from a consumer workflow
+such as \path{examples/review.yml}.
+
+\paragraph{Steps executed inside the consumer runner.}
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Validate event.} Refuses to run unless the trigger is
+        \code{pull\_request} or \code{pull\_request\_target} and a PR number
+        is present in the payload.
+  \item \textbf{Install agent dependencies.} A pinned set is installed with
+        CPU-only \code{torch} first to avoid pulling $\sim$2\,GB of CUDA
+        wheels on the CPU GitHub runner; \code{transformers} is pinned to
+        4.x because \code{nomic-ai/CodeRankEmbed}'s remote-code
+        \code{NomicBertModel} rejects a keyword added in 5.x.
+  \item \textbf{Start RAG sidecar.} Backgrounds \code{python -m rag.main}
+        under \code{DYNACONF\_APP\_PROFILE=prod} and polls
+        \code{http://localhost:8000/health} for up to two minutes.
+  \item \textbf{Ingest target repository.}
+        \code{python -m rag.scripts.ingest\_local} walks
+        \code{\$GITHUB\_WORKSPACE} and posts files into the Chroma
+        collection keyed by \code{\$REPO\_ID} (Section~\ref{sec:rag}).
+  \item \textbf{Run review agent.} \code{python -m agentic.entrypoint}
+        executes with the env vars wired from the Action inputs
+        (Section~\ref{sec:agent}).
+  \item \textbf{Upload artifact.} \code{review\_output.json} and
+        \code{rag.log} are uploaded under the artifact name
+        \code{ai-code-review} regardless of whether the agent succeeded.
+\end{enumerate}
+
+The Action is intentionally \emph{self-contained}: no Docker, no external
+service besides whatever the consumer points \code{MODEL\_API\_BASE} at.
+
+% ============================================================================
+\section{Retrieval-Augmented Generation (RAG)}
+\label{sec:rag}
+
+The RAG service lives under \path{rag/} and exposes a small REST surface
+backed by ChromaDB.
+
+\subsection{Service shape}
+
+\code{rag/main.py} constructs a single \code{FastAPI} app
+(\code{code\_reviewer\_rag\_api}) and mounts the router from
+\code{rag/routes.py}. Three endpoints are exposed:
+
+\begin{itemize}[leftmargin=*]
+  \item \code{GET /health} -- liveness probe used by the Action's polling
+        loop.
+  \item \code{POST /api/v1/ingest/\{repository\_id:path\}} -- accepts an
+        \code{IngestionRequest} (a list of \code{SourceCodeSnippet} objects)
+        and returns an \code{IngestionAcknowledgement}.
+  \item \code{POST /api/v1/retrieve/\{repository\_id:path\}} -- accepts a
+        \code{SearchQuery} (query text, \code{max\_results} clamped to
+        $[1,20]$, optional metadata filter) and returns a
+        \code{RetrievalResults} object containing matches with cosine
+        similarity scores.
+\end{itemize}
+
+A \code{DELETE /api/v1/repo/\{id\}/file?path=...} endpoint removes all
+snippets for a given file from the collection but is not used by the
+default agent flow.
+
+Schemas are defined as Pydantic models in \code{rag/schemas.py}. The
+relevance score returned to clients is
+$\mathrm{score} = 1 - \mathrm{distance}$, where \code{distance} is
+ChromaDB's cosine distance.
+
+\subsection{Per-repository collections}
+
+\code{rag/database.py} wraps \code{chromadb.PersistentClient} with a
+\code{RepositoryVectorDatabase} that creates one collection per repository.
+Names are produced by \code{sanitize\_repository\_identifier}: non-alphanumeric
+characters are replaced with hyphens, length is clamped to $[3, 63]$, and
+leading/trailing characters are forced to alphanumeric -- matching ChromaDB's
+collection-name constraint. Each collection is created with
+\code{metadata=\{"hnsw:space": "cosine"\}} so similarity is cosine.
+
+\subsection{Embeddings}
+
+\code{rag/embeddings.py} implements
+\code{TrustedSentenceTransformerEmbedding}, a Chroma \code{EmbeddingFunction}
+that wraps \code{SentenceTransformer(model\_name, trust\_remote\_code=True)}.
+The \code{trust\_remote\_code=True} flag is required because
+\code{nomic-ai/CodeRankEmbed} ships a custom \code{NomicBertModel}
+architecture. The same \code{embedding\_service} module-level instance is
+used both at ingestion time and at query time, ensuring symmetric encoding.
+The model identifier is read from \code{settings.EMBEDDINGS.MODEL\_NAME},
+which is set to \code{nomic-ai/CodeRankEmbed} in both \code{config.dev.yaml}
+and \code{config.prod.yaml}.
+
+\subsection{Ingestion pipeline}
+
+\code{rag/service.py} implements \code{ingest\_repository}. For each
+snippet:
+
+\begin{enumerate}[leftmargin=*]
+  \item Base metadata is augmented with \code{file\_path},
+        \code{repository\_id}, and \code{chunk\_index}; any
+        \code{metadata\_overrides} from the request are merged on top.
+  \item A deterministic ID is computed by
+        \code{generate\_deterministic\_id} in \code{service.py} as the SHA-256
+        of the string
+        \code{\{repo\_id\}:\{file\_path\}:\{chunk\_index\}:sha256(content)}.
+        This is what makes ingestion idempotent: re-running on the same
+        content updates the existing entry instead of duplicating it.
+  \item All snippets are sent through \code{collection.upsert(ids, documents,
+        metadatas)} in a single call, so embedding happens in one batch.
+\end{enumerate}
+
+The CI ingester (\code{rag/scripts/ingest\_local.py}) walks the local
+filesystem rather than fetching files from GitHub. It applies three filters
+before sending snippets in batches of 25:
+
+\begin{itemize}[leftmargin=*]
+  \item Directory denylist:
+        \code{\{.git, node\_modules, .venv, venv, \_\_pycache\_\_, .chroma\_data,
+        dist, build, .idea, .github, .pytest\_cache, .mypy\_cache,
+        .ruff\_cache\}}.
+  \item Extension allowlist read from
+        \code{settings.INGESTION.SUPPORTED\_EXTENSIONS}
+        (\code{.py, .md, .ts, .js, .go, .java, .rs}).
+  \item Per-file size cap \code{MAX\_FILE\_BYTES = 200{,}000}.
+\end{itemize}
+
+Each file becomes a single snippet with \code{chunk\_index=0} and language
+metadata derived from its suffix. The script is the only one of the two
+ingest scripts wired into the Action;
+\code{rag/scripts/ingest\_repository.py} is an older variant that fetches
+files via the GitHub raw API and is retained for ad-hoc indexing of remote
+repositories.
+
+\subsection{Query path}
+
+\code{retrieve\_semantic\_context} delegates the actual search to
+\code{collection.query(query\_texts=[q], n\_results=k, where=...,
+include=["documents","metadatas","distances"])}. The list comprehension
+that walks
+\code{query\_results["documents"][0]} constructs \code{RetrievalMatch}
+objects with
+\code{relevance\_score = 1.0 - distance}. The retrieval HTTP path is hit
+by exactly one consumer in production: the agent's
+\code{SemanticSearchTool}.
+
+% ============================================================================
+\section{Configuration}
+
+\code{config/config\_manager.py} reads \code{DYNACONF\_APP\_PROFILE} (must
+be set; refusing to start otherwise) and constructs a
+\code{Dynaconf} instance that layers:
+\code{config/config.yaml}, \code{config/config.\{profile\}.yaml}, and
+\code{config/.secrets.\{profile\}.yaml}. A small \code{SettingsWrapper}
+raises if a queried attribute is missing rather than silently returning
+\code{None}, which catches typos in the YAML keys at the point of use.
+
+In the shipped Action the profile is \code{prod}; for local dry-runs the
+README documents \code{DYNACONF\_APP\_PROFILE=dev}. The two YAML files are
+identical at present; they exist as the seam for future
+profile-specific overrides (e.g. a different embedding model in dev).
+
+% ============================================================================
+\section{The Agent}
+\label{sec:agent}
+
+\code{agentic/} contains the policy-side of the system: the entry point,
+the agent constructor, the tool definitions, the review-state machine, and
+the skills loader.
+
+\subsection{Construction}
+
+\code{agentic/agent.py} is twelve lines:
+
+\begin{lstlisting}
+from smolagents import CodeAgent, LiteLLMModel
+from agentic.config import API_BASE, MODEL_ID
+from agentic.tools import TOOLS
+
+def build_model():
+    return LiteLLMModel(model_id=MODEL_ID, api_base=API_BASE, max_tokens=4096)
+
+def build_agent():
+    return CodeAgent(tools=TOOLS, model=build_model())
+\end{lstlisting}
+
+\code{LiteLLMModel} routes through the LiteLLM SDK, which means any
+OpenAI-compatible endpoint (vLLM, TGI, HF Inference Endpoints, mlx-lm,
+\code{llama-server}, Together, Fireworks, etc.) can be substituted with no
+code changes. \code{agentic/config.py} loads a local \path{agentic/.env}
+file if one exists, defaults \code{API\_BASE} to \code{http://localhost:1234/v1}
+(LM Studio), and \emph{prefixes the model id with} \code{openai/} so LiteLLM
+treats the endpoint as OpenAI-compatible. It also seeds \code{OPENAI\_API\_KEY}
+with \code{dummy} if the env var is missing, which is what allows
+unauthenticated local endpoints to work.
+
+\subsection{Entry point and prompt}
+\label{sec:prompt}
+
+\code{agentic/entrypoint.py} is the binary that the Action invokes. It reads
+five required env vars (\code{GITHUB\_TOKEN}, \code{REPO\_ID}/%
+\code{GITHUB\_REPOSITORY}, \code{PR\_NUMBER}, \code{HEAD\_SHA}, plus
+\code{API\_BASE}), then:
+
+\begin{enumerate}[leftmargin=*]
+  \item Calls \code{GitHubClient.get\_pr}, \code{.get\_pr\_diff} (which uses
+        the \code{application/vnd.github.v3.diff} Accept header), and
+        \code{.get\_existing\_review\_comments}.
+  \item Configures the singleton \code{REVIEW\_STATE}
+        (Section~\ref{sec:review-state}) with the GitHub client, repo, PR
+        number, head SHA, and comment budget.
+  \item Truncates the diff to 60{,}000 characters via \code{\_truncate\_diff},
+        splitting the budget in half between the head and tail with an
+        explicit truncation marker.
+  \item Runs \code{detect\_skills(diff=truncated\_diff)}
+        (Section~\ref{sec:skills}) to produce a catalog of framework
+        playbooks the agent \emph{can} load on demand.
+  \item Assembles the task prompt by concatenating, in order: the
+        \code{SYSTEM\_INSTRUCTIONS} string; the optional skills catalog;
+        repo, PR, author, base$\leftarrow$head, file/line counts; the PR body;
+        the truncated diff in a \code{diff}-fenced code block; and an
+        \code{ALREADY FLAGGED} block listing the first 30 existing inline
+        comments verbatim so the model does not re-emit them.
+  \item Invokes \code{agent.run(task, max\_steps=MAX\_AGENT\_STEPS)} inside
+        a \code{try/except} that, on any uncaught exception, sets the
+        verdict to \textsc{comment} so the review still posts.
+  \item Calls \code{REVIEW\_STATE.submit()} unconditionally.
+\end{enumerate}
+
+The \code{SYSTEM\_INSTRUCTIONS} string is the behavioural contract. It
+encodes a three-step protocol: \emph{investigate} (require at least one
+investigation tool call before any \code{post\_comment}), \emph{post
+findings}, and \emph{verdict} (exactly one of the three verdict tools,
+followed by \code{final\_answer("done")}). It also lists nine failure-mode
+categories the reviewer should scan for: error-path state restoration, PII
+in logs, hardcoded secrets/fallbacks, input validation, error UX,
+auth/AuthZ gaps, crypto mistakes, injection, and framework gotchas.
+
+\subsection{Tools}
+\label{sec:tools}
+
+All tools subclass \code{smolagents.Tool} and live under
+\path{agentic/tools/}. Table~\ref{tab:tools} summarizes them; each is
+described in detail below.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{0.25\textwidth}p{0.16\textwidth}p{0.50\textwidth}@{}}
+\toprule
+\textbf{Tool} & \textbf{Module} & \textbf{Purpose} \\
+\midrule
+\code{semantic\_search}       & retrieval & RAG over the ingested codebase. \\
+\code{search\_keyword}        & retrieval & \code{grep -rn} across the checkout. \\
+\code{search\_symbol}         & retrieval & AST walk for Python definitions. \\
+\code{get\_file}              & retrieval & Read a file or a \code{start-end} line range. \\
+\code{run\_tests}             & execution & \code{pytest} on the working tree. \\
+\code{run\_linter}            & execution & \code{ruff check} on a path or repo. \\
+\code{run\_typecheck}         & execution & \code{mypy} on a path or repo. \\
+\code{run\_snippet}           & execution & Sandboxed Python exec with a 5\,s timeout. \\
+\code{check\_history}         & history   & \code{git blame} on a path or line range. \\
+\code{get\_pr\_metadata}      & history   & GitHub REST \code{GET /pulls/\{n\}}; falls back to \code{git log -1}. \\
+\code{get\_team\_conventions} & history   & Read \code{.cursorrules}, \code{CONTRIBUTING.md}, \code{CLAUDE.md}. \\
+\code{load\_skill}            & skills    & Pull a framework playbook into context. \\
+\code{post\_comment}          & action    & Buffer one inline comment on \code{file:line}. \\
+\code{propose\_patch}         & action    & Buffer a GitHub-style \code{suggestion} block. \\
+\code{request\_changes}       & action    & Verdict: \textsc{request\_changes}. \\
+\code{approve}                & action    & Verdict: \textsc{approve}. \\
+\code{comment\_only}          & action    & Verdict: \textsc{comment}. \\
+\bottomrule
+\end{tabular}
+\caption{The agent's tool surface. All tools are passed to \code{CodeAgent}
+in the order listed in \path{agentic/tools/\_\_init\_\_.py}.}
+\label{tab:tools}
+\end{table}
+
+\subsubsection{Retrieval tools}
+
+\code{SemanticSearchTool} POSTs to
+\code{\{RAG\_URL\}/api/v1/retrieve/\{REPO\_ID\}} with the agent's query and
+clamps \code{k} to $[1,20]$. \code{SearchKeywordTool} shells out to
+\code{grep -rn} from the repository root, with an optional
+\code{--include path\_glob}. \code{SearchSymbolTool} performs a recursive
+\code{os.walk} over the workspace, parses every \code{.py} file with the
+standard \code{ast} module, and walks the tree for
+\code{FunctionDef}, \code{AsyncFunctionDef}, or \code{ClassDef} nodes
+matching \code{name}. \code{GetFileTool} reads a path with optional
+\code{"start-end"} line slicing.
+
+\subsubsection{Execution tools}
+
+All four execution tools shell out to subprocesses with
+\code{capture\_output=True}. \code{RunSnippetTool} writes the snippet to
+\code{/tmp/snippet.py} and runs \code{python3} with a five-second timeout;
+the temp file is cleaned up in a \code{finally} block. Only
+\code{language in \{"python","python3"\}} is accepted.
+
+\subsubsection{History and metadata}
+
+\code{CheckHistoryTool} invokes \code{git blame [-L line\_range] path}.
+\code{GetPrMetadataTool} prefers the GitHub API path when
+\code{GITHUB\_TOKEN} is set and falls back to \code{git log -1} otherwise,
+so the same tool works locally and in CI. \code{GetTeamConventionsTool}
+reads up to four files at known paths (\code{.cursorrules},
+\code{.github/CONTRIBUTING.md}, \code{CONTRIBUTING.md}, \code{CLAUDE.md})
+and returns their concatenation; this is the agent's hook for
+respecting team-specific style.
+
+\subsubsection{Action tools and review state}
+\label{sec:review-state}
+
+The action tools are the only ones that mutate the review. They all
+delegate to the module-level singleton \code{REVIEW\_STATE} defined in
+\code{agentic/review\_state.py}. The state machine enforces four
+invariants:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Dedupe by \code{(file, line)}.} \code{add\_comment} returns
+        \code{"duplicate"} if a comment already exists on that pair; the
+        model has a tendency to re-emit findings across steps.
+  \item \textbf{Hard comment budget.} Returns \code{"budget\_exhausted"}
+        once \code{len(comments) >= comment\_budget}.
+  \item \textbf{Comments frozen after verdict.} Once
+        \code{set\_verdict} succeeds, \code{add\_comment} returns
+        \code{"finalized"}.
+  \item \textbf{First-verdict-wins.} \code{set\_verdict} returns
+        \code{False} on the second call.
+\end{enumerate}
+
+\code{submit()} POSTs a single
+\code{POST /repos/\{repo\}/pulls/\{pr\}/reviews} payload with the buffered
+\code{comments}, the chosen \code{event}, and a short body summarizing the
+number of findings. The submission has \emph{two} fallback paths:
+
+\begin{itemize}[leftmargin=*]
+  \item If GitHub returns \code{422} on an \textsc{approve} verdict (the
+        default \code{GITHUB\_TOKEN} cannot self-approve), the code
+        downgrades the event to \textsc{comment} and retries while keeping
+        all inline comments.
+  \item If either submission still fails (e.g. an inline comment refers to
+        a line that does not exist on the diff), the code folds the
+        per-comment bodies into the review body as a Markdown list and
+        retries with an empty \code{comments} array; failing that, it
+        dumps the payload to \code{review\_output.json} and to stdout.
+\end{itemize}
+
+When the agent runs without a configured GitHub client (local dry-run),
+\code{submit()} skips the network call entirely and only writes
+\code{review\_output.json}.
+
+\subsection{Skills: framework playbooks on demand}
+\label{sec:skills}
+
+\code{agentic/skills/} contains five markdown playbooks
+(\code{async-js.md}, \code{nextjs.md}, \code{react.md}, \code{supabase.md},
+\code{vite.md}), each with YAML-style frontmatter declaring its name,
+description, and \code{triggers}. Trigger fields are:
+\code{package\_json\_dep}, \code{package\_json\_dep\_prefix},
+\code{pyproject\_dep}, \code{cargo\_dep}, \code{go\_mod\_module},
+\code{files}, and \code{diff\_extensions}. A skill matches if \emph{any}
+trigger matches (OR semantics).
+
+The two-stage design in \code{agentic/skills/loader.py} keeps the cost on
+the prompt small:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Catalog} (\code{detect\_skills}). At task setup, the loader
+        parses the consumer repository's \code{package.json},
+        \code{pyproject.toml}, \code{Cargo.toml}, and \code{go.mod}, plus
+        the set of file extensions present in the diff, and selects all
+        skills whose triggers match. Each entry costs roughly one line on
+        the prompt (\code{name} + description). The catalog is injected
+        under the heading \code{AVAILABLE PLAYBOOKS}.
+  \item \textbf{Body} (\code{load\_skill\_body}). The
+        \code{LoadSkillTool} fetches the full body of a named skill on
+        demand and caches the \emph{name} (not the body) on the instance
+        so the agent receives a polite no-op on the second call instead
+        of duplicating the body in the conversation.
+\end{enumerate}
+
+The frontmatter parser is intentionally hand-rolled rather than pulling in
+PyYAML for this one use case; it handles only top-level scalar keys and
+the \code{triggers:} block (lists or scalar values). The package.json
+parser handles \code{dependencies}, \code{devDependencies}, and
+\code{peerDependencies}. The \code{pyproject.toml} parser uses two regexes
+to catch both Poetry-style (\code{name = "1.0"}) and PEP-621
+(\code{"name>=1.0"}) dependency declarations without importing a TOML
+parser.
+
+% ============================================================================
+\section{Model Training}
+
+The policy model is \code{Qwen/Qwen3.5-9B}, a 9B-parameter decoder-only
+causal LM from Alibaba's Qwen team. We train in two stages.
+
+\subsection{Stage 1: Supervised fine-tuning (QLoRA)}
+
+\paragraph{Data pipeline.} The pipeline is split into four numbered
+modules under \path{sft/data/}:
+
+\begin{enumerate}[leftmargin=*]
+  \item \code{download.py} fetches the Microsoft \emph{CodeReviewer
+        Comment Generation} dataset (846\,MB) from Zenodo record 6900648
+        and extracts it under \path{data/raw/}.
+  \item \code{filter.py} removes obviously non-actionable comments before
+        training (training split only; valid/test pass through). The
+        filters are: length below 10 characters, exact-match against a
+        38-entry noisy lexicon (\code{lgtm}, \code{done}, \code{ok},
+        \code{+1}, \code{wip}, \code{thanks}, $\ldots$), and seven regex
+        patterns covering bare URLs, ``see \#N'', ``duplicate of \#N'',
+        and punctuation-only comments.
+  \item \code{preprocess.py} converts each surviving \code{(patch, msg)}
+        pair into a three-message chat conversation: a fixed
+        \code{SYSTEM\_PROMPT} (the SFT system prompt; reproduced at the
+        end of this section), a user message wrapping the normalized diff
+        in a fenced \code{diff} block, and the assistant message with the
+        ground-truth comment. The patch normalizer rewrites
+        CodeReviewer's \code{<add>}/\code{<del>} tags to the more
+        common \code{+}/\code{-} prefixes.
+  \item \code{split.py} shuffles the preprocessed train split with seed
+        42 and emits an 80/10/10 train/val/test partition into
+        \path{data/processed/\{train,val,test\}.jsonl}.
+\end{enumerate}
+
+\paragraph{Training loop.} \code{sft/training/sft.py} imports
+\code{unsloth} \emph{before} \code{trl}/\code{transformers} so the patch
+that powers Unsloth's accelerated kernels takes effect. The script reads
+\path{sft/training/config.yaml} and loads the model via
+\code{FastLanguageModel.from\_pretrained} with \code{max\_seq\_length=2048},
+\code{load\_in\_4bit=True}, and the auto dtype (\code{bf16} on A100). LoRA
+adapters are then attached with:
+
+\begin{tabular}{@{}ll@{}}
+rank $r$              & 16 \\
+$\alpha$              & 16 \\
+dropout               & 0  \\
+target modules        & \code{q\_proj, k\_proj, v\_proj, o\_proj, gate\_proj, up\_proj, down\_proj} \\
+\end{tabular}
+
+\noindent
+Training uses TRL's \code{SFTTrainer} with
+\code{per\_device\_train\_batch\_size=32},
+\code{gradient\_accumulation\_steps=1}, \code{learning\_rate=2e-4},
+\code{lr\_scheduler="cosine"}, \code{weight\_decay=0.01},
+\code{max\_grad\_norm=1.0}, \code{bf16=true}, \code{optim="adamw\_8bit"}, and
+\code{num\_train\_epochs=1}. The chat-format conversion is done at
+\code{Dataset.map} time via \code{tokenizer.apply\_chat\_template(...,
+add\_generation\_prompt=False)}, so the model is trained on the full
+assistant turn including the response. The script supports two debug knobs:
+\code{--small-run} (1K/100 train/val examples) and \code{--max-examples N}.
+
+The resulting adapter is published as
+\href{https://huggingface.co/cristicretu/code-reviewer-lora}{\code{cristicretu/code-reviewer-lora}}.
+
+\subsection{Stage 2: RLHF with GRPO and a Claude judge}
+
+\code{rlhf/training/grpo.py} starts from the SFT adapter and continues with
+Group Relative Policy Optimization~\cite{shao2024deepseekmath} via TRL's
+\code{GRPOTrainer}. For each prompt the trainer samples
+\code{num\_generations=4} completions at \code{temperature=0.8} with
+\code{max\_prompt\_length=512} and \code{max\_completion\_length=512}; the
+group-relative advantage replaces the value head used in vanilla PPO.
+
+\paragraph{Reward.} The reward is an LLM-as-judge call to
+\code{claude-haiku-4-5-20251001} through the Anthropic SDK. The judge
+prompt (\code{JUDGE\_PROMPT} at the top of the file) asks for a single
+integer 1--5 with the rubric:
+
+\begin{itemize}[leftmargin=*,nosep]
+  \item \textbf{5} -- real issue, exact location, explanation, concrete fix.
+  \item \textbf{4} -- real issue but vague about location, cause, or fix.
+  \item \textbf{3} -- partially correct.
+  \item \textbf{2} -- generic observation applicable to any diff.
+  \item \textbf{1} -- factually wrong, refers to absent code, or toxic.
+\end{itemize}
+
+After parsing the integer, the reward function subtracts a length penalty
+of $\min(0.5, \max(0, (w-100)/100) \cdot 0.5)$ where $w$ is the completion
+word count. This caps verbosity at no extra cost for $\le 100$ words and
+fades the score down by up to 0.5 for completions over 200 words.
+
+Robustness is layered in three places:
+
+\begin{itemize}[leftmargin=*]
+  \item \emph{API errors.} \code{anthropic.RateLimitError} retries up to
+        four times with $2^a \cdot 5$ second backoff;
+        \code{APITimeoutError}, \code{APIConnectionError}, and
+        \code{InternalServerError} retry with $2^a \cdot 2$ second backoff;
+        repeated failure returns the floor score \code{1.0}.
+  \item \emph{Concurrency.} A module-level
+        \code{ThreadPoolExecutor(max\_workers=8)} fans out judge calls
+        across the group of 4 completions $\times$ batch.
+  \item \emph{Parse errors.} A non-integer judge response (e.g. the model
+        emitting a \code{ToolUse} block instead of \code{TextBlock}) also
+        floors to 1.0.
+\end{itemize}
+
+\paragraph{Optimizer.} Training runs one epoch on the first 250 prompts of
+the preprocessed train split, at \code{learning\_rate=2e-6},
+\code{per\_device\_train\_batch\_size=1},
+\code{gradient\_accumulation\_steps=4}, \code{bf16=true}. The model is
+loaded from the SFT adapter with \code{load\_in\_4bit=True}. After
+training, \code{model.save\_pretrained(f"\{output\_dir\}/final")} writes a
+PEFT-format checkpoint and, if \code{GRPO\_HUB\_MODEL\_ID} (or the YAML
+\code{hub\_model\_id}) is set, pushes to the Hub. The published checkpoint
+is \href{https://huggingface.co/cretu-luca/code-reviewer-grpo}%
+{\code{cretu-luca/code-reviewer-grpo}}.
+
+% ============================================================================
+\section{Quantization for Apple Silicon}
+
+\code{quantize/quantize.py} produces a 4-bit GGUF artifact suitable for
+\code{llama-server} on a 24\,GB M4 Pro. The pipeline composes four
+upstream tools from \code{ggml-org/llama.cpp}:
+
+\begin{enumerate}[leftmargin=*]
+  \item \code{convert\_hf\_to\_gguf.py base\_dir \texttt{-{}-}outtype f16
+        \texttt{-{}-}outfile base-f16.gguf}.
+  \item \code{convert\_lora\_to\_gguf.py adapter\_dir \texttt{-{}-}base
+        base\_dir \texttt{-{}-}outfile grpo-lora.gguf}.
+  \item \code{llama-export-lora -m base-f16.gguf \texttt{-{}-}lora
+        grpo-lora.gguf -o fused-f16.gguf}.
+  \item \code{llama-quantize fused-f16.gguf out.gguf Q4\_K\_M}.
+\end{enumerate}
+
+The non-trivial step the script handles itself is \emph{staging}: it
+materializes a directory whose weights/\code{config.json} come from the
+base model snapshot but whose tokenizer files
+(\code{tokenizer.json}, \code{tokenizer\_config.json},
+\code{chat\_template.jinja}, \code{special\_tokens\_map.json},
+\code{vocab.json}, \code{merges.txt}) come from the GRPO adapter
+repository. This ensures the GGUF metadata embeds the chat template the
+model was \emph{trained} with, not the base's default. Without this, the
+served model drifts off-distribution and can stall inside the thinking
+block.
+
+\code{which\_or\_die} resolves the two binaries (\code{llama-quantize},
+\code{llama-export-lora}); the latter is not in the Homebrew formula and
+must be built from source, so the function also searches
+\path{./.quantize-work/llama.cpp-src/build/bin}.
+
+The default quantization \code{Q4\_K\_M} produces a $\sim$5.2\,GB GGUF
+that resides in $\sim$6.5\,GB of RAM at inference, leaving comfortable
+headroom on a 24\,GB Mac for KV cache and the rest of the system. The
+choice is justified in \path{docs/quantize-on-mac.md} with a per-step
+walltime/RAM/disk table on M4 Pro: $\sim$10 minutes wall clock total,
+peaking at $\sim$40\,GB free disk during \code{llama-export-lora}. The
+published GGUF lives at
+\href{https://huggingface.co/cretu-luca/code-reviewer-grpo-GGUF}%
+{\code{cretu-luca/code-reviewer-grpo-GGUF}}.
+
+% ============================================================================
+\section{Evaluation}
+
+Evaluation is split between fast automated metrics
+(\path{sft/eval/metrics.py}, \path{sft/eval/defect\_metrics.py}) and
+LLM-as-judge runs (\path{sft/eval/judge.py},
+\path{sft/eval/deepeval\_judge.py}).
+
+\subsection{Automated metrics}
+
+\code{compute\_metrics(preds, refs)} returns three reference-based scores:
+
+\begin{itemize}[leftmargin=*,nosep]
+  \item \textbf{ChrF} via \code{sacrebleu.corpus\_chrf}.
+  \item \textbf{ROUGE-L} F1 via \code{rouge\_score.rouge\_scorer.RougeScorer(["rougeL"], use\_stemmer=True)}.
+  \item \textbf{CodeBERTScore} F1 from the \code{code\_bert\_score} package,
+        falling back to \code{None} if the optional dependency is absent.
+\end{itemize}
+
+BLEU is intentionally omitted (corpus BLEU on review comments scores
+below 10 and is uninformative).
+
+\code{defect\_metrics.py} adds four reference-free or
+diff-relative metrics, all token/regex based and fast enough to run on
+an M1 Pro in seconds:
+
+\begin{itemize}[leftmargin=*,nosep]
+  \item \textbf{Hallucination rate.} For each prediction, extracts
+        identifiers via \code{[a-zA-Z\_][a-zA-Z0-9\_]\{2,\}}, removes a
+        50-word English stoplist, and flags a prediction as hallucinated
+        if more than 30\% of its identifiers do not appear in the diff.
+  \item \textbf{Defect F1.} Approximates issue overlap by computing
+        identifier-set precision/recall against the reference comment
+        and reporting their harmonic mean.
+  \item \textbf{Coherence.} A weighted score
+        (\code{0.25 sent + 0.25 len + 0.20 code-ratio + 0.30 structure})
+        rewarding 3--8 sentences, average sentence length near 15 words,
+        $\sim$15\% code tokens, and the presence of explanatory phrases
+        (\textit{the issue is}, \textit{this could cause},
+        \textit{to fix}, \textit{because}).
+  \item \textbf{Toxicity rate.} A boolean match against five regex
+        patterns covering insults, sarcasm, and gendered pronouns in
+        evaluative position.
+\end{itemize}
+
+\subsection{LLM-as-judge}
+
+\code{sft/eval/judge.py} scores three dimensions (accuracy, helpfulness,
+specificity) on a 1--5 scale and supports two backends:
+
+\begin{itemize}[leftmargin=*,nosep]
+  \item \code{--backend gemini} (\code{gemini-2.5-flash}) with explicit
+        rate-limit handling: a 13-second sleep between requests to respect
+        the free-tier 5\,RPM cap, plus exponential backoff (up to 5
+        attempts) on 429/503.
+  \item \code{--backend anthropic} (\code{claude-sonnet-4-20250514}).
+\end{itemize}
+
+A separate \code{deepeval\_judge.py} adds G-Eval rubrics for
+\emph{correctness}, \emph{specificity}, and \emph{actionability}, plus
+the built-in \code{AnswerRelevancyMetric}, scored by a local Ollama model
+configured via \code{LOCAL\_MODEL\_*} env vars.
+
+\subsection{Headline results}
+
+We compare three checkpoints on the CodeReviewer test split: the
+\code{qwen3:8b} base, the SFT adapter
+(\code{cristicretu/code-reviewer-lora}), and the GRPO model
+(\code{cretu-luca/code-reviewer-grpo}). Automated metrics are computed on
+100 examples; LLM-as-judge on 10 examples per model with Gemini 2.5 Flash
+as the judge.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Metric}      & \textbf{Base (qwen3:8b)} & \textbf{SFT}    & \textbf{RLHF}    \\
+\midrule
+Defect F1            & 0.001                    & 0.070           & \textbf{0.072}  \\
+CodeBERTScore        & 0.000                    & 0.668           & \textbf{0.669}  \\
+ChrF                 & 0.29                     & 13.45           & \textbf{13.93}  \\
+ROUGE-L              & 0.001                    & 0.049           & \textbf{0.050}  \\
+Coherence            & 0.009                    & 0.491           & \textbf{0.507}  \\
+Hallucination rate   & 100\%                    & 76\%            & 81\%            \\
+Toxicity rate        & 0\%                      & 0\%             & 0\%             \\
+\bottomrule
+\end{tabular}
+\caption{Automated metrics, $n=100$. Both fine-tuned variants dwarf the
+base on every reference-based metric; the base produces essentially empty
+reviews (mean response length $\approx 3$ characters).}
+\label{tab:auto}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Dimension}   & \textbf{SFT ($n=10$)} & \textbf{RLHF ($n=8$)} \\
+\midrule
+Accuracy             & \textbf{2.40}/5.0     & 1.50/5.0              \\
+Helpfulness          & \textbf{1.90}/5.0     & 1.25/5.0              \\
+Specificity          & \textbf{3.70}/5.0     & 2.62/5.0              \\
+\bottomrule
+\end{tabular}
+\caption{LLM-as-judge (Gemini 2.5 Flash). The independent judge prefers the
+SFT model on all three dimensions, suggesting the GRPO stage over-optimized
+the Claude Haiku judge it was trained against.}
+\label{tab:judge}
+\end{table}
+
+\paragraph{Discussion.} Three findings stand out (cf.\ \path{EVAL\_RESULTS.md}):
+(1) both fine-tunes dramatically outperform the base on every metric, which
+is unsurprising since the base produces near-empty reviews;
+(2) automated metrics show a small consistent edge for RLHF over SFT
+(Defect F1 0.072 vs.\ 0.070, ChrF 13.93 vs.\ 13.45); and
+(3) the cross-judge LLM evaluation reverses that ordering. Together these
+suggest the GRPO stage learned to maximize the Claude Haiku reward signal
+without an unambiguous gain in subjective review quality. The hallucination
+metric (76--81\%) reads alarming in isolation but is a heuristic: any new
+identifier introduced by a suggested fix counts against the score, which is
+exactly what good reviews do.
+
+\subsection{End-to-end agent evaluation}
+
+The README also reports an end-to-end evaluation of the
+\code{code-reviewer-4-bit} GGUF inside the \code{smolagents.CodeAgent}
+pipeline on 15 examples from the CodeReviewer test set, with the local
+\code{gemma-4-e4b-it} as judge. The three metrics are:
+
+\begin{itemize}[leftmargin=*,nosep]
+  \item \textbf{Task Completion} (binary; was a valid verdict set before
+        the step budget): 13/15 = 86.7\%, mean 0.85.
+  \item \textbf{Task Correctness} (G-Eval over the GRPO reward rubric):
+        13/15 pass at $\ge 0.50$ threshold, mean 0.85.
+  \item \textbf{Step Efficiency} (linear decay over the 10-call cap,
+        defined in the README): 12/15 = 80\%, mean 0.82.
+\end{itemize}
+
+The two budget-exhausted runs share a failure mode: the model emitted
+prose review text rather than Python tool calls, leaving \code{smolagents}
+with nothing executable.
+
+% ============================================================================
+\section{Operations}
+
+\subsection{Consumer integration}
+
+Three GitHub repository secrets must be set: \code{MODEL\_API\_BASE},
+\code{MODEL\_ID}, \code{MODEL\_API\_KEY}. \path{examples/review.yml}
+is the recommended workflow:
+
+\begin{lstlisting}
+name: AI Code Review
+on: { pull_request: { types: [opened, synchronize, reopened] } }
+permissions: { contents: read, pull-requests: write }
+concurrency: { group: ai-review-${{ github.event.pull_request.number }},
+               cancel-in-progress: true }
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: ${{ github.event.pull_request.head.sha }}, fetch-depth: 0 }
+      - uses: cristicretu/code-reviewer@v1
+        with:
+          model-api-base: ${{ secrets.MODEL_API_BASE }}
+          model-id:       ${{ secrets.MODEL_ID }}
+          model-api-key:  ${{ secrets.MODEL_API_KEY }}
+\end{lstlisting}
+
+The \code{concurrency} block cancels in-flight reviews when a new commit
+lands, which avoids paying for a stale review that the next push would
+invalidate anyway.
+
+\subsection{Self-hosting on Apple Silicon}
+
+Two paths are documented in \path{docs/}. \path{quantize-on-mac.md}
+covers building the \code{Q4\_K\_M} GGUF and serving it via
+\code{llama-server -m \ldots --port 8080 --jinja -c 4096 -ngl 999}, which
+exposes an OpenAI-compatible \code{/v1/chat/completions} endpoint with
+\code{reasoning\_content} support. \path{host-on-mac.md} covers the
+zero-cost demo path: convert with \code{mlx-lm} 4-bit, serve on
+\code{127.0.0.1:8001}, then expose it via
+\code{cloudflared tunnel --url http://127.0.0.1:8001} and paste the
+resulting \code{trycloudflare.com} URL into the consumer repo's
+\code{MODEL\_API\_BASE} secret.
+
+% ============================================================================
+\section{Failure Modes and Mitigations}
+
+The behavior of the system on adversarial inputs is shaped largely by the
+review-state machine and the agent's prompt:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Spurious comments.} The system prompt mandates at least one
+        investigation tool call before any \code{post\_comment}. A run that
+        skips this is, by the prompt's own definition, a failed review.
+  \item \textbf{Comment flood.} The hard \code{comment\_budget} (default
+        10) is enforced server-side in \code{ReviewState.add\_comment};
+        the prompt also asks the agent to ``pick the highest-impact issues
+        first.''
+  \item \textbf{Duplicate findings on consecutive steps.} Dedupe by
+        \code{(file, line)} in \code{add\_comment}.
+  \item \textbf{Indecision.} \code{set\_verdict} is first-call-wins; the
+        per-tool docstring tells the agent that subsequent verdict calls
+        are no-ops.
+  \item \textbf{Crashes mid-run.} \code{entrypoint.main} catches any agent
+        exception, sets the verdict to \code{COMMENT}, and still posts
+        \code{REVIEW\_STATE.submit()}.
+  \item \textbf{\textsc{approve} rejected (422).} \code{ReviewState.submit}
+        retries the same payload as \textsc{comment}; if that fails too,
+        comments are folded into the body and the inline payload is
+        emptied.
+  \item \textbf{Existing comments.} The prompt lists up to 30 previously
+        flagged comments under \code{ALREADY FLAGGED} so the agent does
+        not re-emit them on a subsequent push.
+\end{itemize}
+
+% ============================================================================
+\section{Limitations and Future Work}
+
+The system is small enough to enumerate its rough edges:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{\code{search\_symbol} is Python-only.} It walks
+        \code{.py} files with the standard \code{ast} module; TypeScript,
+        Go, and Rust definitions are visible only through
+        \code{search\_keyword}.
+  \item \textbf{No execution sandbox.} \code{run\_tests},
+        \code{run\_linter}, \code{run\_typecheck}, and \code{run\_snippet}
+        all execute against the unsandboxed runner working directory. The
+        snippet tool has only a five-second timeout. The Action should
+        not be run on \code{pull\_request\_target} from forks without
+        further isolation.
+  \item \textbf{GRPO reward is single-judge.} The reward depends on one
+        Claude Haiku call per completion. Table~\ref{tab:judge} shows the
+        usual symptom: the cross-judge evaluation does not confirm the
+        gain over SFT. A multi-judge or human-in-the-loop reward would
+        likely help.
+  \item \textbf{Skills catalog is short.} Five playbooks cover React,
+        Next.js, Vite, Supabase, and async JS/TS. Python frameworks
+        (Django, FastAPI), Go, Rust, and infra-as-code are not yet
+        represented; the skill format is intentionally one file per
+        framework so adding one is a contribution without code changes.
+\end{itemize}
+
+% ============================================================================
+\section{Conclusion}
+
+We have described a complete, deployable system for automated pull-request
+review. The architecture is deliberately simple: a small RAG service, an
+agent with seventeen tools (Table~\ref{tab:tools}), and a singleton state
+machine that buffers and submits one batched review per run. Most of the
+engineering is in the contract -- the agent's prompt, the tool surface, and
+the review-state invariants -- rather than in the model. The trained
+checkpoint is published as
+\code{cretu-luca/code-reviewer-grpo} (and \code{...-GGUF} for Apple Silicon),
+and the Action is consumable from any repository with three secrets and a
+nine-line workflow.
+
+% ============================================================================
+\bibliographystyle{plain}
+\begin{thebibliography}{9}
+
+\bibitem{shao2024deepseekmath}
+Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Bi, X., Zhang, H., Zhang, M.,
+Li, Y., Wu, Y., Guo, D.
+\newblock DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open
+Language Models.
+\newblock \emph{arXiv preprint arXiv:2402.03300}, 2024.
+\newblock \url{https://arxiv.org/abs/2402.03300}.
+
+\bibitem{li2022codereviewer}
+Li, Z., Lu, S., Guo, D., Duan, N., Jannu, S., Jenks, G., Majumder, D.,
+Green, J., Svyatkovskiy, A., Fu, S., Sundaresan, N.
+\newblock Automating Code Review Activities by Large-Scale Pre-Training.
+\newblock \emph{ESEC/FSE}, 2022.
+\newblock Dataset: Zenodo record 6900648.
+
+\bibitem{nomic2024coderankembed}
+Nomic AI.
+\newblock CodeRankEmbed: A high-quality code embedding model.
+\newblock \url{https://huggingface.co/nomic-ai/CodeRankEmbed}.
+
+\bibitem{qwen2024qwen35}
+Qwen Team, Alibaba.
+\newblock Qwen3.5 technical report.
+\newblock \url{https://huggingface.co/Qwen/Qwen3.5-9B}.
+
+\bibitem{unsloth}
+Han, D., Han, M.
+\newblock Unsloth: 2--5x faster LLM training with less memory.
+\newblock \url{https://github.com/unslothai/unsloth}.
+
+\bibitem{trl}
+von Werra, L., et al.
+\newblock TRL: Transformer Reinforcement Learning.
+\newblock \url{https://github.com/huggingface/trl}.
+
+\bibitem{smolagents}
+Hugging Face.
+\newblock \texttt{smolagents}: a barebones library for agents.
+\newblock \url{https://github.com/huggingface/smolagents}.
+
+\bibitem{chromadb}
+Chroma.
+\newblock The AI-native open-source embedding database.
+\newblock \url{https://www.trychroma.com}.
+
+\bibitem{llamacpp}
+Gerganov, G., et al.
+\newblock llama.cpp: LLM inference in C/C++.
+\newblock \url{https://github.com/ggerganov/llama.cpp}.
+
+\end{thebibliography}
+
+\end{document}
