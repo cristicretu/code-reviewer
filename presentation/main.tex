@@ -169,9 +169,6 @@
 
 % ---------- 6b. Dataset ----------------------------------------------------
 \begin{frame}{Dataset -- Microsoft CodeReviewer}
-  \chip{Source: Zenodo records/6900648}\;\chip{\textit{Comment Generation} split}\;\chip{846 MB raw}
-  \vspace{0.3em}
-
   \footnotesize Each example in the dataset is a real code diff from an open-source GitHub PR, paired
   with the actual comment a human reviewer wrote on that diff. We use the public
   \textit{Comment Generation} split to teach the model the same task: read a diff, write a
@@ -218,12 +215,13 @@
         \item Adapters attached to every projection layer (\texttt{q,k,v,o,gate,up,down\_proj})
         \item lr \texttt{2e-4}, cosine schedule, 10 warmup steps, AdamW 8-bit
         \item Per-device batch 32, weight decay 0.01, grad clip 1.0
-        \item \alert{1 epoch} only -- more starts overfitting to the noisier reviewer comments
       \end{itemize}
       \vspace{4pt}
-      \scriptsize \faBox\ Published adapter: \texttt{cristicretu/code-reviewer-lora}
     \column{0.46\textwidth}
       \begin{block}{\footnotesize System prompt sent with every training example}
+
+        \vspace{0.2cm}
+      
         \scriptsize\itshape You are an expert code reviewer. Given a code diff,
         provide a concise, actionable review comment. Focus on bugs, security
         vulnerabilities, performance issues, and code style. Be specific:
@@ -255,7 +253,10 @@
       \end{itemize}
       \vspace{4pt}
     \column{0.50\textwidth}
-      \begin{block}{\footnotesize Reward prompt (verbatim, abridged)}
+      \begin{block}{\footnotesize Reward prompt }
+
+        \vspace{0.2cm}
+      
         \tiny\ttfamily
         You are evaluating an automated code review comment on a code diff.\\[3pt]
         \textless code-diff\textgreater~ [DIFF] ~\textless/code-diff\textgreater\\
@@ -309,7 +310,6 @@
       \begin{itemize}\scriptsize
         \item Walks the repo, skips build / cache dirs (\texttt{.git}, \texttt{node\_modules}, \texttt{.venv}, \texttt{\_\_pycache\_\_}, \texttt{dist}, \texttt{build}, \dots)
         \item Keeps \texttt{.py}, \texttt{.md}, \texttt{.ts}, \texttt{.js}, \texttt{.go}, \texttt{.java}, \texttt{.rs}
-        \item Drops empty files and anything over \alert{200\,KB}
         \item \alert{Chunking}: 60-line windows with 10-line overlap; \texttt{start\_line} kept in metadata so retrieval can cite a region
         \item Sent in batches of 25 to the ingest endpoint
       \end{itemize}
