@@ -254,7 +254,6 @@
         \item \alert{250 prompts} (subset of SFT training data)
       \end{itemize}
       \vspace{4pt}
-      \footnotesize \faBox\ \texttt{cretu-luca/code-reviewer-grpo} \;|\; \texttt{...-grpo-GGUF} (Q4\_K\_M, 5.2\,GB)
     \column{0.50\textwidth}
       \begin{block}{\footnotesize Reward prompt (verbatim, abridged)}
         \tiny\ttfamily
@@ -276,6 +275,27 @@
 % ===========================================================================
 % Hand-off to presenter B
 % ===========================================================================
+
+
+
+% ---------- 8a. Static eval -- automatic metrics --------------------------
+\begin{frame}{Static evaluation -- automatic metrics}
+  \begin{tabular}{@{}lccc@{}}
+    \toprule
+     & \textbf{Base (Qwen3.5-9B)} & \textbf{SFT} & \textbf{RLHF} \\
+    \midrule
+    Defect F1            & 0.064 & 0.069          & \textbf{0.085} \\
+    CodeBERTScore        & 0.700 & \textbf{0.730} & 0.727 \\
+    ChrF                 & 17.63 & 18.53          & \textbf{19.07} \\
+    ROUGE-L              & 0.073 & \textbf{0.124} & 0.122 \\
+    Coherence            & \textbf{0.648} & 0.517 & 0.506 \\
+    Toxicity rate        & 1\%   & 1\%            & 0\% \\
+    \midrule
+    Avg prediction length & 998 ch & \textbf{132 ch} & \textbf{140 ch} \\
+    Ref. (human) length   & \multicolumn{3}{c}{124 ch on average} \\
+    \bottomrule
+  \end{tabular}
+\end{frame}
 
 % ---------- 7. RAG --------------------------------------------------------
 \begin{frame}{RAG -- indexing the repo}
@@ -378,81 +398,6 @@
   \texttt{mandate-investigate} prompt, chunked RAG. Multi-run is a free recall multiplier any
   consumer can adopt.
   \vspace{0.4em}
-\end{frame}
-
-% ---------- 8a. Static eval -- automatic metrics --------------------------
-\begin{frame}{Static evaluation -- automatic metrics}
-  \textbf{Setup} \;\chip{100 ex from 11{,}772 CodeReviewer test set}\;\chip{Q4\_K\_M via LM Studio, thinking off}
-  \vspace{0.5em}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.58\textwidth}
-      \footnotesize
-      \begin{tabular}{@{}lccc@{}}
-        \toprule
-         & \textbf{Base (Qwen3.5-9B)} & \textbf{SFT} & \textbf{RLHF} \\
-        \midrule
-        Defect F1            & 0.064 & 0.069          & \textbf{0.085} \\
-        CodeBERTScore        & 0.700 & \textbf{0.730} & 0.727 \\
-        ChrF                 & 17.63 & 18.53          & \textbf{19.07} \\
-        ROUGE-L              & 0.073 & \textbf{0.124} & 0.122 \\
-        Coherence            & \textbf{0.648} & 0.517 & 0.506 \\
-        Toxicity rate        & 1\%   & 1\%            & 0\% \\
-        \midrule
-        Avg prediction length & 998 ch & \textbf{132 ch} & \textbf{140 ch} \\
-        Ref. (human) length   & \multicolumn{3}{c}{124 ch on average} \\
-        \bottomrule
-      \end{tabular}
-    \column{0.38\textwidth}
-      \textbf{Reading the table}
-      \begin{itemize}\scriptsize
-        \item \alert{Fine-tuning taught reviewer style}: base writes 1000-char essays; SFT \& RLHF write $\sim$135-char focused comments -- within 10\% of the 124-char human references
-        \item \alert{RLHF's edge over SFT lands on Defect F1} (+23\% relative, 0.085 vs 0.069) -- RLHF reviews mention more of the same identifiers humans mention, which is exactly what the Haiku reward (correctness + specificity) trained for
-        \item SFT and RLHF nearly tied on CBS / ROUGE-L / ChrF -- similar style, RLHF just lands closer to the actual issue
-        \item Coherence: base wins because the heuristic rewards longer prose -- a metric quirk, not a quality regression
-        \item Toxicity: bottom-noise (regex false-positives)
-      \end{itemize}
-  \end{columns}
-\end{frame}
-
-% ---------- 8b. Static eval -- LLM-as-judge --------------------------------
-\begin{frame}{Static evaluation -- LLM-as-judge}
-  \textbf{Setup} \;\chip{Gemini 2.5 Flash}\;\chip{10 ex per model}\;\chip{1--5 on three axes}
-  \vspace{0.4em}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.52\textwidth}
-      \begin{block}{\footnotesize Judge prompt (abridged)}
-        \tiny\ttfamily
-        You are evaluating the quality of an automated code review comment.\\[2pt]
-        \#\# Code Diff~~~~~~~~~~~~ [DIFF]\\
-        \#\# Review Comment~~~~ [COMMENT]\\
-        \#\# Ground Truth ~~~~~~ [REFERENCE]\\[3pt]
-        Score 1--5 on three dimensions:\\[2pt]
-        \textbf{Accuracy} -- identifies a real issue? 1 if hallucinated, 5 if precisely identified.\\
-        \textbf{Helpfulness} -- actionable suggestion? 1 if vague/generic, 5 if a clear fix.\\
-        \textbf{Specificity} -- references exact code/lines? 1 if generic, 5 if pinpoints.\\[3pt]
-        Respond with JSON only:~ [accuracy, helpfulness, specificity, reasoning].
-      \end{block}
-    \column{0.44\textwidth}
-      \footnotesize
-      \begin{tabular}{@{}lcc@{}}
-        \toprule
-         & \textbf{SFT} (n=10) & \textbf{RLHF} (n=8) \\
-        \midrule
-        Accuracy     & \textbf{2.40} & 1.50 \\
-        Helpfulness  & \textbf{1.90} & 1.25 \\
-        Specificity  & \textbf{3.70} & 2.62 \\
-        \bottomrule
-      \end{tabular}
-      \vspace{8pt}
-
-      \textbf{Findings}
-      \begin{itemize}\scriptsize
-        \item Both tuned models crush base across the board
-        \item Auto metrics said RLHF was marginally ahead -- the Gemini judge \alert{disagrees and prefers SFT}
-        \item Consistent with \alert{reward over-fit to Haiku}: a single-judge GRPO setup is a real risk
-        \item Take-away: rotate judges next time (Haiku / Gemini / Gemma)
-      \end{itemize}
-  \end{columns}
 \end{frame}
 
 % ---------- 8c. Agentic eval -- setup + summary ---------------------------
