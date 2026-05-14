@@ -382,35 +382,34 @@
 
 % ---------- 8a. Static eval -- automatic metrics --------------------------
 \begin{frame}{Static evaluation -- automatic metrics}
-  \textbf{Setup} \;\chip{100 ex sampled from 11{,}772 CodeReviewer test set}\;\chip{base vs SFT vs RLHF}
+  \textbf{Setup} \;\chip{100 ex from 11{,}772 CodeReviewer test set}\;\chip{Q4\_K\_M via LM Studio, thinking off}
   \vspace{0.5em}
   \begin{columns}[T,onlytextwidth]
-    \column{0.62\textwidth}
+    \column{0.58\textwidth}
       \footnotesize
       \begin{tabular}{@{}lccc@{}}
         \toprule
-         & \textbf{Base (qwen3:8b)} & \textbf{SFT} & \textbf{RLHF} \\
+         & \textbf{Base (Qwen3.5-9B)} & \textbf{SFT} & \textbf{RLHF} \\
         \midrule
-        Defect F1            & 0.001 & 0.070  & \textbf{0.072} \\
-        CodeBERTScore        & 0.000 & 0.668  & \textbf{0.669} \\
-        ChrF                 & 0.29  & 13.45  & \textbf{13.93} \\
-        ROUGE-L              & 0.001 & 0.049  & \textbf{0.050} \\
-        Coherence            & 0.009 & 0.491  & \textbf{0.507} \\
+        Defect F1            & 0.064 & 0.069          & \textbf{0.085} \\
+        CodeBERTScore        & 0.700 & \textbf{0.730} & 0.727 \\
+        ChrF                 & 17.63 & 18.53          & \textbf{19.07} \\
+        ROUGE-L              & 0.073 & \textbf{0.124} & 0.122 \\
+        Coherence            & \textbf{0.648} & 0.517 & 0.506 \\
+        Toxicity rate        & 1\%   & 1\%            & 0\% \\
         \midrule
-        Hallucination rate   & 100\% & 76\%   & 81\% \\
-        Toxicity rate        & 0\%   & 0\%    & 0\% \\
-        \midrule
-        Avg prediction length & 3 ch & $\sim$900 ch & $\sim$900 ch \\
+        Avg prediction length & 998 ch & \textbf{132 ch} & \textbf{140 ch} \\
+        Ref. (human) length   & \multicolumn{3}{c}{124 ch on average} \\
         \bottomrule
       \end{tabular}
-    \column{0.34\textwidth}
+    \column{0.38\textwidth}
       \textbf{Reading the table}
       \begin{itemize}\scriptsize
-        \item Base outputs are \alert{essentially empty} (3-char average) -- it never learned the format
-        \item SFT and RLHF produce structured, $\sim$900-char reviews
-        \item RLHF nudges ahead on every overlap metric -- gap is consistent but small
-        \item Hallucination is heuristic (identifier not in the diff); reviews legitimately introduce names when proposing fixes, inflating this
-        \item Toxicity zero -- expected for OSS review data
+        \item \alert{Fine-tuning taught reviewer style}: base writes 1000-char essays; SFT \& RLHF write $\sim$135-char focused comments -- within 10\% of the 124-char human references
+        \item \alert{RLHF's edge over SFT lands on Defect F1} (+23\% relative, 0.085 vs 0.069) -- RLHF reviews mention more of the same identifiers humans mention, which is exactly what the Haiku reward (correctness + specificity) trained for
+        \item SFT and RLHF nearly tied on CBS / ROUGE-L / ChrF -- similar style, RLHF just lands closer to the actual issue
+        \item Coherence: base wins because the heuristic rewards longer prose -- a metric quirk, not a quality regression
+        \item Toxicity: bottom-noise (regex false-positives)
       \end{itemize}
   \end{columns}
 \end{frame}
