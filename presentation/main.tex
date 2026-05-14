@@ -123,166 +123,436 @@
     \end{tabular}
   \end{table}
   \vspace{0.4em}
-  Microsoft CodeReviewer is our \textbf{training and evaluation benchmark}: 11.7k held-out
-  \textit{(patch, comment)} pairs from real OSS reviews.
+  \textbf{Microsoft CodeReviewer} is the dataset we train and evaluate on -- code diffs paired with the
+  actual comment a human reviewer left on that diff in a real open-source GitHub PR. After cleaning, we
+  train on $\sim$94k pairs and hold out 11.7k for evaluation.
 \end{frame}
 
 % ---------- 5. Proposed Solution -- Architecture ---------------------------
 \begin{frame}{Solution -- architecture}
+  \vspace{0.3em}
   \centering
   \begin{tikzpicture}[
-      node distance=10mm and 9mm,
+      node distance=12mm and 11mm,
       box/.style={draw=mute, rounded corners=3pt, inner sep=5pt, font=\scriptsize,
-                  minimum height=8mm, align=center, fill=soft},
-      accbox/.style={box, draw=accent, fill=white, text=accent},
-      arr/.style={-Latex, mute, thick}]
-    \node[box] (pr)  {\faGithub\ PR event};
-    \node[box, right=of pr] (act) {Composite\\Action};
-    \node[box, right=of act] (rag) {RAG ingest\\(Chroma)};
-    \node[accbox, right=of rag] (agent) {\faRobot\ \textbf{Agent}\\loop};
-    \node[box, below=14mm of agent] (verdict) {Verdict + comments\\$\rightarrow$ 1 review};
-
-    \node[box, below=of pr, xshift=18mm, minimum width=58mm] (model)
-      {\faMicrochip\ \textbf{Model:} Qwen3.5-9B \;|\; SFT (QLoRA) $\rightarrow$ GRPO \;|\; Q4\_K\_M GGUF};
-
-    \node[box, right=of model, minimum width=40mm] (tools)
-      {\faWrench\ 13 tools: \texttt{semantic\_search}, \texttt{run\_tests},\\
-       \texttt{run\_linter}, \texttt{check\_history}, \texttt{post\_comment}, \dots};
+                  minimum height=9mm, align=center, fill=soft},
+      accbox/.style={box, draw=accent, fill=white, text=accent,
+                     font=\scriptsize\bfseries, minimum width=22mm},
+      arr/.style={-Latex, mute, thick},
+      arrdash/.style={-Latex, mute, thick, dashed}]
+    % Top row: linear pipeline
+    \node[box] (pr)  {\faGithub\ PR opened\\or pushed};
+    \node[box, right=of pr] (act) {GitHub Action\\fetches diff,\\indexes the repo};
+    \node[accbox, right=of act] (agent) {\faRobot\ Agent\\loop};
+    \node[box, right=of agent] (review) {\faCommentDots\ 1 batched\\review back\\to the PR};
 
     \draw[arr] (pr) -- (act);
-    \draw[arr] (act) -- (rag);
-    \draw[arr] (rag) -- (agent);
-    \draw[arr] (agent) -- (verdict);
-    \draw[arr, dashed] (model.north) -- ++(0,4mm) -| (agent.south);
-    \draw[arr, dashed] (tools.north) -- ++(0,4mm) -| (agent.south);
+    \draw[arr] (act) -- (agent);
+    \draw[arr] (agent) -- (review);
+
+    % Bottom row: what the agent uses
+    \node[box, below=14mm of agent, xshift=-32mm, minimum width=36mm] (model)
+      {\faMicrochip\ \textbf{Model:} Qwen3.5-9B\\SFT (QLoRA) $\rightarrow$ GRPO};
+    \node[box, below=14mm of agent, minimum width=28mm] (tools)
+      {\faWrench\ \textbf{17 tools}\\search / run / post};
+    \node[box, below=14mm of agent, xshift=32mm, minimum width=36mm] (rag)
+      {\faDatabase\ \textbf{Indexed codebase}\\Chroma + CodeRankEmbed};
+
+    \draw[arrdash] (model.north) -- ([xshift=-7mm]agent.south);
+    \draw[arrdash] (tools.north) -- (agent.south);
+    \draw[arrdash] (rag.north)   -- ([xshift=7mm]agent.south);
   \end{tikzpicture}
+  \vspace{0.5em}\\
+  \footnotesize\textcolor{mute}{Top: pipeline. Bottom: what the agent calls into during the loop.}
 \end{frame}
 
-% ---------- 6. Training ----------------------------------------------------
-\begin{frame}{Training -- SFT then GRPO}
+% ---------- 6. SFT concept -------------------------------------------------
+\begin{frame}{Supervised fine-tuning -- the idea}
   \begin{columns}[T,onlytextwidth]
     \column{0.48\textwidth}
-      \textbf{\faLayerGroup\ SFT} \;\chip{1 epoch}\;\chip{A100 80GB}
+      \textbf{\faLayerGroup\ What SFT does}
       \begin{itemize}\small
-        \item Base: Qwen3.5-9B, 4-bit NF4, bf16
-        \item Data: Microsoft CodeReviewer, filtered noisy comments (\textit{lgtm}, \textit{+1}, urls, \textless10 chars)
-        \item QLoRA $r{=}16$, $\alpha{=}16$, all proj layers
-        \item lr 2e-4, batch 32, cosine, AdamW 8-bit
+        \item Start from a base LM -- a next-token predictor trained on the open web
+        \item Train on \emph{(prompt, ideal-response)} pairs
+        \item Loss is only computed on the model's reply (the review), \alert{not on the diff} -- the training signal teaches it to write reviews, not to re-emit the diff
+        \item Architecture unchanged; the weights are updated so the model's outputs come to look like the human reviews in the training data
       \end{itemize}
     \column{0.48\textwidth}
-      \textbf{\faTrophy\ GRPO (RLHF)} \;\chip{TRL}
+      \textbf{\faMicrochip\ Why QLoRA on top}
       \begin{itemize}\small
-        \item 4 samples / prompt, group-relative reward
-        \item Reward: Claude Haiku 4.5 judge, 1--5 on correctness + specificity
-        \item Length penalty up to $-0.5$ over 100 words
-        \item 250 prompts, lr 2e-6, bf16
+        \item Full FT of a 9B model in bf16 with optimizer state $\approx$ 100\,GB
+        \item \alert{LoRA} -- freeze the base, train rank-$r$ adapters on attention + MLP projections; ${\sim}$0.5\% of weights are trainable
+        \item \alert{4-bit NF4} -- quantise the frozen base; the whole stack fits on one A100 80\,GB with batch 32
+        \item Output: a small $\sim$80\,MB adapter file -- you load it on top of the base at inference time
       \end{itemize}
   \end{columns}
+\end{frame}
+
+% ---------- 6b. Dataset ----------------------------------------------------
+\begin{frame}{Dataset -- Microsoft CodeReviewer}
+  \chip{Source: Zenodo records/6900648}\;\chip{\textit{Comment Generation} split}\;\chip{846 MB raw}
   \vspace{0.4em}
-  \footnotesize Published: \texttt{cristicretu/code-reviewer-lora} (SFT),
-  \texttt{cretu-luca/code-reviewer-grpo} (RLHF),
-  \texttt{cretu-luca/code-reviewer-grpo-GGUF} (4-bit, 5.2\,GB).
+
+  Each example in the dataset is a real code diff from an open-source GitHub PR, paired
+  with the actual comment a human reviewer wrote on that diff. We use the public
+  \textit{Comment Generation} split to teach the model the same task: read a diff, write a
+  review.
+  \vspace{0.6em}
+
+  \begin{columns}[T,onlytextwidth]
+    \column{0.50\textwidth}
+      \textbf{Cleaning before training}
+      \begin{itemize}\small
+        \item Drop comments under 10 characters (mostly noise)
+        \item Drop generic acknowledgements: \textit{lgtm}, \textit{+1}, \textit{done}, \textit{nit}, \textit{ack}, \textit{fixed}
+        \item Drop bare URLs and formatting-only changes
+        \item Convert the dataset's \texttt{<add>}/\texttt{<del>} tags into a normal \texttt{+}/\texttt{-} line-prefix diff
+      \end{itemize}
+    \column{0.46\textwidth}
+      \textbf{One example becomes a 3-turn chat}
+      \begin{itemize}\small
+        \item \textbf{system}: a fixed instruction (next slide)
+        \item \textbf{user}: \texttt{Review this code change: ```diff ... ```}
+        \item \textbf{assistant}: the human reviewer's actual comment from the PR
+      \end{itemize}
+  \end{columns}
+  \vspace{0.5em}
+  \footnotesize After cleaning we shuffle and split 80/10/10 (seed 42): \alert{$\sim$94k train},
+  \alert{$\sim$11.7k val}, \alert{11.7k test}. The test split is held out -- every number in our
+  results tables is computed on examples the model has never seen.
+\end{frame}
+
+% ---------- 6c. SFT implementation -----------------------------------------
+\begin{frame}{SFT -- our setup}
+  We fine-tune Qwen3.5-9B on the prepared chat-format dataset using TRL's
+  \texttt{SFTTrainer} with Unsloth's kernel patches for speed. Only the LoRA adapters are
+  updated; the base model stays frozen and quantised.
+  \vspace{0.5em}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.50\textwidth}
+      \textbf{Training} \;\chip{TRL SFTTrainer + Unsloth}\;\chip{A100 80GB}
+      \begin{itemize}\small
+        \item Base model loaded in NF4 4-bit, bf16 compute, \texttt{max\_seq=2048}
+        \item QLoRA adapters: rank $r{=}16$, $\alpha{=}16$, dropout 0
+        \item Adapters attached to every projection layer (\texttt{q,k,v,o,gate,up,down\_proj})
+        \item lr \texttt{2e-4}, cosine schedule, 10 warmup steps, AdamW 8-bit
+        \item Per-device batch 32, weight decay 0.01, grad clip 1.0
+        \item \alert{1 epoch} only -- more starts overfitting to the noisier reviewer comments
+      \end{itemize}
+      \vspace{4pt}
+      \footnotesize \faBox\ Published adapter: \texttt{cristicretu/code-reviewer-lora}
+    \column{0.46\textwidth}
+      \begin{block}{\footnotesize System prompt sent with every training example}
+        \scriptsize\itshape You are an expert code reviewer. Given a code diff,
+        provide a concise, actionable review comment. Focus on bugs, security
+        vulnerabilities, performance issues, and code style. Be specific:
+        reference the exact code that needs changing and explain why. If the
+        code looks correct, say so briefly.
+      \end{block}
+  \end{columns}
+\end{frame}
+
+% ---------- 6c. GRPO concept -----------------------------------------------
+\begin{frame}{RLHF with GRPO -- the idea}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.50\textwidth}
+      \textbf{Why a second stage?}
+      \begin{itemize}\small
+        \item SFT teaches the model to \emph{imitate} the corpus -- including its vague / wrong / lazy reviews
+        \item RLHF pushes the model toward what we actually value, defined by a \alert{reward function} instead of demos
+        \item Reward can be a learned model, a rule, or (here) an LLM-as-judge
+      \end{itemize}
+    \column{0.46\textwidth}
+      \textbf{How GRPO works}\;\chip{Group Relative Policy Optimisation}
+      \begin{itemize}\small
+        \item For each prompt, the model writes several candidate reviews (we use 4)
+        \item A reward function scores all of them
+        \item The model is updated to write more like the higher-scoring candidates and less like the lower-scoring ones, judged against the group's own average
+        \item No separate critic / value network is needed -- the group itself is the baseline that classical PPO would have learned
+      \end{itemize}
+  \end{columns}
+  \vspace{0.5em}
+  \begin{block}{One training step, in plain words}
+    \footnotesize Sample 4 candidate reviews $\rightarrow$ score each $\rightarrow$ update the model toward
+    the better ones, with a small KL term keeping it close to the SFT checkpoint so it doesn't drift away.
+  \end{block}
+\end{frame}
+
+% ---------- 6d. GRPO our setup + reward prompt -----------------------------
+\begin{frame}{GRPO -- our setup \& reward}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.48\textwidth}
+      \textbf{Reward}\;\chip{Claude Haiku 4.5 judge}
+      \begin{itemize}\scriptsize
+        \item Scores each candidate review 1--5 on \emph{technical correctness} + \emph{specificity}
+        \item Length penalty up to $-0.5$ over 100 words -- keeps comments tight
+        \item 8 parallel judge workers, retry / backoff on rate-limits
+      \end{itemize}
+      \vspace{4pt}
+      \textbf{Training} \;\chip{TRL GRPOTrainer + Unsloth}
+      \begin{itemize}\scriptsize
+        \item Start from the SFT adapter, same LoRA shape
+        \item $G{=}4$ completions / prompt at $T{=}0.8$
+        \item \texttt{max\_prompt=512}, \texttt{max\_completion=512}
+        \item lr \texttt{2e-6}, batch 1, grad accum 4, 1 epoch, bf16
+        \item \alert{250 prompts} (subset of SFT training data)
+      \end{itemize}
+      \vspace{4pt}
+      \footnotesize \faBox\ \texttt{cretu-luca/code-reviewer-grpo} \;|\; \texttt{...-grpo-GGUF} (Q4\_K\_M, 5.2\,GB)
+    \column{0.50\textwidth}
+      \begin{block}{\footnotesize Reward prompt (verbatim, abridged)}
+        \tiny\ttfamily
+        You are evaluating an automated code review comment on a code diff.\\[3pt]
+        \textless code-diff\textgreater~ [DIFF] ~\textless/code-diff\textgreater\\
+        \textless review-comment\textgreater~ [COMMENT] ~\textless/review-comment\textgreater\\[3pt]
+        Score 1--5 on technical correctness and specificity.\\
+        Length, tone, confidence do not affect the score.\\[3pt]
+        5 -- real issue, exact location, explains why, concrete fix.\\
+        4 -- real issue but vague about location, cause, or fix.\\
+        3 -- partially correct; explanation or fix incomplete.\\
+        2 -- generic; could apply to any diff.\\
+        1 -- factually wrong, refers to code not in the diff, or toxic.\\[3pt]
+        Respond with a single integer (1--5) and nothing else.
+      \end{block}
+  \end{columns}
 \end{frame}
 
 % ===========================================================================
 % Hand-off to presenter B
 % ===========================================================================
 
-% ---------- 7. Agent & RAG -------------------------------------------------
-\begin{frame}{Agent \& tools}
-  \textbf{smolagents \texttt{CodeAgent}} -- writes Python tool calls,
-  budget locked at \alert{20 steps} and \alert{10 comments}.
-  \vspace{0.5em}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.32\textwidth}
-      \textbf{\small Retrieval}
-      \begin{itemize}\scriptsize
-        \item \texttt{semantic\_search}\\(CodeRankEmbed + Chroma)
-        \item \texttt{search\_keyword} (rg)
-        \item \texttt{search\_symbol} (AST)
-        \item \texttt{get\_file}
-      \end{itemize}
-    \column{0.32\textwidth}
-      \textbf{\small Execution}
-      \begin{itemize}\scriptsize
-        \item \texttt{run\_tests} (pytest)
-        \item \texttt{run\_linter} (ruff)
-        \item \texttt{run\_typecheck} (mypy)
-        \item \texttt{run\_snippet} (sandbox, 5\,s)
-      \end{itemize}
-    \column{0.32\textwidth}
-      \textbf{\small Context / action}
-      \begin{itemize}\scriptsize
-        \item \texttt{check\_history} (blame)
-        \item \texttt{load\_skill} -- on-demand playbooks
-        (\texttt{react}, \texttt{nextjs}, \texttt{vite}, \texttt{supabase}, \texttt{async-js})
-        \item \texttt{post\_comment}, \texttt{propose\_patch}
-        \item verdict tools
-      \end{itemize}
-  \end{columns}
-  \vspace{0.4em}
-  \footnotesize \texttt{ReviewState} dedups $(file, line)$ comments and batches \alert{one}
-  \texttt{POST /reviews} at the end.
-\end{frame}
-
-% ---------- 8. Experiments -------------------------------------------------
-\begin{frame}{Experiments}
-  Two evaluation tracks, on held-out Microsoft CodeReviewer test data (11{,}772 ex).
+% ---------- 7. RAG --------------------------------------------------------
+\begin{frame}{RAG -- indexing the repo}
+  Before the agent runs, the action walks the checked-out repo and indexes it into
+  a per-repo Chroma collection. The agent's \texttt{semantic\_search} tool queries
+  that collection during the review.
   \vspace{0.6em}
   \begin{columns}[T,onlytextwidth]
     \column{0.48\textwidth}
-      \textbf{\faChartLine\ Static (text-level)} -- 100 ex
+      \textbf{Ingestion}
       \begin{itemize}\small
-        \item Defect F1, CodeBERTScore, ChrF, ROUGE-L
-        \item Coherence, hallucination, toxicity
-        \item LLM-judge: Gemini 2.5 Flash (10 ex)
+        \item Walks the repo, skips build / cache dirs (\texttt{.git}, \texttt{node\_modules}, \texttt{.venv}, \texttt{\_\_pycache\_\_}, \texttt{dist}, \texttt{build}, \dots)
+        \item Keeps \texttt{.py}, \texttt{.md}, \texttt{.ts}, \texttt{.js}, \texttt{.go}, \texttt{.java}, \texttt{.rs}
+        \item Drops empty files and anything over \alert{200\,KB}
+        \item \alert{Chunking}: one file = one snippet, no sub-file splitting
+        \item Sent in batches of 25 to the ingest endpoint
       \end{itemize}
-      Compares: \texttt{base} vs \texttt{SFT} vs \texttt{RLHF}.
-
     \column{0.48\textwidth}
-      \textbf{\faRobot\ Agentic (end-to-end)} -- 15 ex
+      \textbf{Embeddings \& storage}
       \begin{itemize}\small
-        \item Full smolagents pipeline, 4-bit GGUF locally
-        \item Task completion (verdict reached)
-        \item Task correctness (Gemma GEval rubric)
-        \item Step efficiency vs budget
+        \item Embedder: \texttt{nomic-ai/CodeRankEmbed}, run locally via \texttt{SentenceTransformer}
+        \item \texttt{chromadb.PersistentClient} on disk, one collection per repository, HNSW with cosine distance
+        \item Doc IDs are a SHA-256 of \texttt{(repo, path, chunk\_index, content)}; we \texttt{upsert} so re-ingesting unchanged content is a no-op
+      \end{itemize}
+  \end{columns}
+  \vspace{0.6em}
+  \footnotesize\textbf{Retrieval:} \texttt{semantic\_search(query, k)} returns the top-$k$ chunks with
+  their file path and a cosine-similarity score (computed as $1 - \text{distance}$). $k$ defaults to 10,
+  capped at 20.
+\end{frame}
+
+% ---------- 7b. Agent & tools ---------------------------------------------
+\begin{frame}{Agent \& tools}
+  \textbf{smolagents \texttt{CodeAgent}} -- writes Python tool calls, ends with
+  \texttt{final\_answer("done")}.\;
+  Defaults: \alert{20 steps}, \alert{10 inline comments} (both tunable via env).
+  \vspace{0.3em}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.33\textwidth}
+      \textbf{\small Retrieval}
+      \begin{itemize}\scriptsize
+        \item \texttt{semantic\_search}\\(CodeRankEmbed + Chroma, behind a local FastAPI service)
+        \item \texttt{search\_keyword} (\texttt{grep -rn})
+        \item \texttt{search\_symbol} (Python \texttt{ast}, \texttt{.py} files)
+        \item \texttt{get\_file} (path + optional \texttt{line\_range})
+      \end{itemize}
+    \column{0.33\textwidth}
+      \textbf{\small Execution}
+      \begin{itemize}\scriptsize
+        \item \texttt{run\_tests} (\texttt{pytest})
+        \item \texttt{run\_linter} (\texttt{ruff check})
+        \item \texttt{run\_typecheck} (\texttt{mypy})
+        \item \texttt{run\_snippet} (\texttt{python3} subprocess, 5\,s timeout)
+      \end{itemize}
+    \column{0.33\textwidth}
+      \textbf{\small Context}
+      \begin{itemize}\scriptsize
+        \item \texttt{check\_history} (\texttt{git blame})
+        \item \texttt{get\_pr\_metadata} (GitHub REST: title, author, base/head, files)
+        \item \texttt{get\_team\_conventions}\\(\texttt{CLAUDE.md} / \texttt{CONTRIBUTING.md} / \texttt{.cursorrules})
+        \item \texttt{load\_skill} -- playbooks (\texttt{react}, \texttt{nextjs}, \texttt{vite}, \texttt{supabase}, \texttt{async-js})
+      \end{itemize}
+  \end{columns}
+  \vspace{0.3em}
+  \textbf{\small Action} \;\textcolor{mute}{\scriptsize buffered into \texttt{ReviewState}, sent as one review}
+  \begin{itemize}\scriptsize
+    \item \texttt{post\_comment(file, line, severity, category, suggestion)} \;|\; \texttt{propose\_patch(file, line, diff)}
+    \item Verdict (\alert{first-call-wins}): \texttt{approve} \;|\; \texttt{request\_changes} \;|\; \texttt{comment\_only}
+  \end{itemize}
+  \vspace{0.2em}
+  \footnotesize \texttt{ReviewState} dedups by $(file, line)$, enforces the budget, and POSTs one
+  \texttt{/repos/.../pulls/.../reviews} at the end -- auto-downgrades \texttt{APPROVE}\,$\rightarrow$\,\texttt{COMMENT} when GitHub returns 422.
+\end{frame}
+
+% ---------- 8a. Static eval -- automatic metrics --------------------------
+\begin{frame}{Static evaluation -- automatic metrics}
+  \textbf{Setup} \;\chip{100 ex sampled from 11{,}772 CodeReviewer test set}\;\chip{base vs SFT vs RLHF}
+  \vspace{0.5em}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.62\textwidth}
+      \footnotesize
+      \begin{tabular}{@{}lccc@{}}
+        \toprule
+         & \textbf{Base (qwen3:8b)} & \textbf{SFT} & \textbf{RLHF} \\
+        \midrule
+        Defect F1            & 0.001 & 0.070  & \textbf{0.072} \\
+        CodeBERTScore        & 0.000 & 0.668  & \textbf{0.669} \\
+        ChrF                 & 0.29  & 13.45  & \textbf{13.93} \\
+        ROUGE-L              & 0.001 & 0.049  & \textbf{0.050} \\
+        Coherence            & 0.009 & 0.491  & \textbf{0.507} \\
+        \midrule
+        Hallucination rate   & 100\% & 76\%   & 81\% \\
+        Toxicity rate        & 0\%   & 0\%    & 0\% \\
+        \midrule
+        Avg prediction length & 3 ch & $\sim$900 ch & $\sim$900 ch \\
+        \bottomrule
+      \end{tabular}
+    \column{0.34\textwidth}
+      \textbf{Reading the table}
+      \begin{itemize}\scriptsize
+        \item Base outputs are \alert{essentially empty} (3-char average) -- it never learned the format
+        \item SFT and RLHF produce structured, $\sim$900-char reviews
+        \item RLHF nudges ahead on every overlap metric -- gap is consistent but small
+        \item Hallucination is heuristic (identifier not in the diff); reviews legitimately introduce names when proposing fixes, inflating this
+        \item Toxicity zero -- expected for OSS review data
       \end{itemize}
   \end{columns}
 \end{frame}
 
-% ---------- 9. Results -----------------------------------------------------
-\begin{frame}{Results}
+% ---------- 8b. Static eval -- LLM-as-judge --------------------------------
+\begin{frame}{Static evaluation -- LLM-as-judge}
+  \textbf{Setup} \;\chip{Gemini 2.5 Flash}\;\chip{10 ex per model}\;\chip{1--5 on three axes}
+  \vspace{0.4em}
   \begin{columns}[T,onlytextwidth]
-    \column{0.55\textwidth}
+    \column{0.52\textwidth}
+      \begin{block}{\footnotesize Judge prompt (abridged)}
+        \tiny\ttfamily
+        You are evaluating the quality of an automated code review comment.\\[2pt]
+        \#\# Code Diff~~~~~~~~~~~~ [DIFF]\\
+        \#\# Review Comment~~~~ [COMMENT]\\
+        \#\# Ground Truth ~~~~~~ [REFERENCE]\\[3pt]
+        Score 1--5 on three dimensions:\\[2pt]
+        \textbf{Accuracy} -- identifies a real issue? 1 if hallucinated, 5 if precisely identified.\\
+        \textbf{Helpfulness} -- actionable suggestion? 1 if vague/generic, 5 if a clear fix.\\
+        \textbf{Specificity} -- references exact code/lines? 1 if generic, 5 if pinpoints.\\[3pt]
+        Respond with JSON only:~ [accuracy, helpfulness, specificity, reasoning].
+      \end{block}
+    \column{0.44\textwidth}
+      \footnotesize
+      \begin{tabular}{@{}lcc@{}}
+        \toprule
+         & \textbf{SFT} (n=10) & \textbf{RLHF} (n=8) \\
+        \midrule
+        Accuracy     & \textbf{2.40} & 1.50 \\
+        Helpfulness  & \textbf{1.90} & 1.25 \\
+        Specificity  & \textbf{3.70} & 2.62 \\
+        \bottomrule
+      \end{tabular}
+      \vspace{8pt}
+
+      \textbf{Findings}
+      \begin{itemize}\scriptsize
+        \item Both tuned models crush base across the board
+        \item Auto metrics said RLHF was marginally ahead -- the Gemini judge \alert{disagrees and prefers SFT}
+        \item Consistent with \alert{reward over-fit to Haiku}: a single-judge GRPO setup is a real risk
+        \item Take-away: rotate judges next time (Haiku / Gemini / Gemma)
+      \end{itemize}
+  \end{columns}
+\end{frame}
+
+% ---------- 8c. Agentic eval -- setup + summary ---------------------------
+\begin{frame}{Agentic evaluation -- setup \& metrics}
+  \textbf{Setup} \;\chip{4-bit GGUF agent, local}\;\chip{judge: gemma-4-e4b-it}\;\chip{15 ex, max 20 steps}
+  \vspace{0.5em}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.48\textwidth}
+      \textbf{Three metrics}
+      \begin{itemize}\scriptsize
+        \item \textbf{Task completion} (programmatic) -- 1.0 if a valid verdict was set before the step budget ran out, else 0.0
+        \item \textbf{Task correctness} (LLM-judged, Gemma GEval) -- 0--1, aligned with the RLHF reward rubric
+        \item \textbf{Step efficiency} (programmatic) -- decays linearly above the 10-call cap; 0.3 for verdict-with-no-investigation; 0 for no verdict
+      \end{itemize}
+      \vspace{6pt}
+      \begin{block}{\footnotesize GEval rubric for correctness}
+        \scriptsize
+        Is the flagged issue real and present in the diff?\\
+        Does the comment pinpoint the exact location (file, line)?\\
+        Does it explain \emph{why} the code is problematic?\\
+        Does it propose a concrete, actionable fix?\\
+        Is it specific to this diff, not a generic observation?
+      \end{block}
+    \column{0.48\textwidth}
       \footnotesize
       \begin{tabular}{@{}lccc@{}}
         \toprule
-         & \textbf{Base} & \textbf{SFT} & \textbf{RLHF} \\
+        Metric & Mean & Pass rate & Threshold \\
         \midrule
-        Defect F1            & 0.001 & 0.070 & \textbf{0.072} \\
-        CodeBERTScore        & 0.000 & 0.668 & \textbf{0.669} \\
-        ChrF                 & 0.29  & 13.45 & \textbf{13.93} \\
-        Coherence            & 0.009 & 0.491 & \textbf{0.507} \\
-        \midrule
-        Gemini -- Accuracy   & --    & \textbf{2.40} & 1.50 \\
-        Gemini -- Specificity & --   & \textbf{3.70} & 2.62 \\
+        Task completion   & 0.85 & 13/15 (86.7\%) & $\geq$ 0.50 \\
+        Task correctness  & 0.85 & 13/15 (86.7\%) & $\geq$ 0.50 \\
+        Step efficiency   & 0.82 & 12/15 (80.0\%) & $\geq$ 0.50 \\
         \bottomrule
       \end{tabular}
-      \vspace{6pt}
+      \vspace{8pt}
 
-      \scriptsize
-      \textbf{Agentic pipeline (15 ex):} \\
-      Task completion \textbf{86.7\%} \;|\; Correctness \textbf{86.7\%}
-      \;|\; Step efficiency \textbf{80.0\%}
+      \textbf{What ``step efficiency'' means}
+      \begin{itemize}\scriptsize
+        \item Best score: 1--2 tool calls and a valid verdict
+        \item 0.3 floor for the \emph{verdict with 0 tool calls} case -- a valid verdict without any investigation
+        \item 0 for runs that never reach a verdict
+      \end{itemize}
+  \end{columns}
+\end{frame}
 
-    \column{0.42\textwidth}
-      \textbf{Takeaways}
+% ---------- 8d. Agentic eval -- distributions + analysis -------------------
+\begin{frame}{Agentic evaluation -- distributions \& analysis}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.40\textwidth}
+      \footnotesize\textbf{Verdict distribution}\\[2pt]
+      \begin{tabular}{@{}lcc@{}}
+        \toprule
+        Verdict & N & \% \\
+        \midrule
+        \textsc{approve}          & 10 & 66.7 \\
+        \textsc{comment}          & 2  & 13.3 \\
+        \textsc{request\_changes} & 1  & 6.7 \\
+        \midrule
+        No verdict (budget out)   & 2  & 13.3 \\
+        \bottomrule
+      \end{tabular}
+      \vspace{8pt}
+
+      \footnotesize\textbf{Tool calls per run}\\[2pt]
+      \begin{tabular}{@{}cc@{}}
+        \toprule
+        Calls & Runs \\
+        \midrule
+        0 & 2 \\
+        1 & 8 \\
+        2 & 3 \\
+        3 & 1 \\
+        5 & 1 \\
+        \bottomrule
+      \end{tabular}
+      \vspace{4pt}
+
+      \scriptsize Avg 1.60 \;|\; 1.85 over completed runs \;|\; max 5
+    \column{0.56\textwidth}
+      \textbf{Analysis}
       \begin{itemize}\small
-        \item Base model is unusable (empty outputs)
-        \item SFT closes most of the gap
-        \item GRPO: marginal on auto metrics; Gemini judge \alert{prefers SFT}
-        \item Reward over-fit to Haiku $\Rightarrow$ a single-judge GRPO setup
-          is a real risk
+        \item \alert{2 budget-exhausted runs} share a pattern: the model emitted prose review text instead of Python tool calls -- smolagents has nothing executable to run
+        \item Best correctness on the \textsc{comment} / \textsc{request\_changes} cases -- those force the agent to post a specific inline comment first
+        \item 2 \textsc{approve}-with-0-calls runs drag the efficiency tail down (0.3 floor)
+        \item Step budget is comfortable: max-observed 5 / cap 10
       \end{itemize}
   \end{columns}
 \end{frame}
@@ -291,37 +561,6 @@
 \begin{frame}[standout]
   Demo
   \vspace{6pt}\\
-  \normalsize\mdseries\textcolor{mute}{Pre-loaded PR on a sample repo: action run,
-  inline comments, verdict.}
-\end{frame}
-
-% ---------- 11. Conclusion -------------------------------------------------
-\begin{frame}{Wrap-up}
-  \textbf{What works}
-  \begin{itemize}\small
-    \item Repo-aware agent reaches a valid verdict on 87\% of held-out PRs
-    \item Q4\_K\_M GGUF runs on a 24\,GB M4 -- no GPU bill for the demo
-    \item Composite Action drops into any repo in $\sim$10 lines of YAML
-  \end{itemize}
-
-  \textbf{What we'd improve next}
-  \begin{itemize}\small
-    \item Multi-judge reward (rotate Haiku / Gemini / Gemma) to avoid over-fit
-    \item Larger agentic eval set, with human spot-checks
-    \item Better dedup against past review threads on the same file
-  \end{itemize}
-
-  \vspace{0.4em}
-  \footnotesize
-  \faBox\ \textbf{Deliverable:} code base \;|\; this presentation \;|\; full project doc
-  (same structure as the slides).
-\end{frame}
-
-% ---------- Thanks ---------------------------------------------------------
-\begin{frame}[standout]
-  Thank you
-  \vspace{4pt}\\
-  \normalsize\mdseries\textcolor{mute}{Questions?}
 \end{frame}
 
 \end{document}
