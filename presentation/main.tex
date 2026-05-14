@@ -76,8 +76,8 @@
       \end{itemize}
     \column{0.42\textwidth}
       \chip{\faGithub\ PR opened / synchronized}\\[6pt]
-      \chip{\faRobot\ Agent loop, $\leq$ 30 steps}\\[6pt]
-      \chip{\faCommentDots\ 1 review, $\leq$ 15 inline comments}
+      \chip{\faRobot\ Agent loop, $\leq$ 20 steps (tunable)}\\[6pt]
+      \chip{\faCommentDots\ 1 review, $\leq$ 10 inline comments (tunable)}
   \end{columns}
 \end{frame}
 
@@ -339,6 +339,42 @@
   \texttt{/repos/.../pulls/.../reviews} at the end -- auto-downgrades \texttt{APPROVE}\,$\rightarrow$\,\texttt{COMMENT} when GitHub returns 422.
 \end{frame}
 
+% ---------- 7c. Experiments we ran ----------------------------------------
+\begin{frame}{Experiments we ran on the agent loop}
+  Five ablations against a fixed PR set, all measured against the GEval rubric.
+  None of them required retraining -- they're all runtime / prompt / RAG changes.
+  \vspace{0.5em}
+
+  \footnotesize
+  \begin{tabular}{@{}p{0.32\textwidth} p{0.30\textwidth} p{0.30\textwidth}@{}}
+    \toprule
+    \textbf{What we tried} & \textbf{Setup} & \textbf{Result} \\
+    \midrule
+    Skills system off vs on
+      & 8 PRs, \texttt{max-steps=15}, same model
+      & \alert{Recall $\times$\,5}: \texttt{1/40} $\rightarrow$ \texttt{5/40} TPs \\[3pt]
+    Step-budget sweep
+      & PR \#11, \texttt{max-steps} $\in$ \{4, 8, 16, 24\}
+      & Sweet spot at \textbf{8}; above that the model bails early (\texttt{0/6} at 16, 24) \\[3pt]
+    Multi-run accumulation
+      & 3 PRs $\times$\,3 sequential reruns; dedup by \texttt{(file, line)}
+      & PR \#5: \texttt{R} climbs \texttt{0.00 $\rightarrow$ 0.14 $\rightarrow$ 0.43} \\[3pt]
+    Mandate-investigate prompt
+      & Rewrote system prompt to require $\geq$\,1 retrieval call before \texttt{post\_comment}
+      & \texttt{semantic\_search} usage: \alert{0\% $\rightarrow$ 11\%} of runs; recall \texttt{+42\%} relative \\[3pt]
+    Chunked RAG ingestion
+      & File-level chunks $\rightarrow$ 60-line windows, 10-line overlap
+      & Cross-file riddle PR \#53 catchable: agent reads \emph{both} files \\
+    \bottomrule
+  \end{tabular}
+  \vspace{6pt}
+
+  \begin{block}{\footnotesize What stuck}
+    \scriptsize Shipped: \texttt{skills-on} \;|\; \texttt{steps=20--30} \;|\; \texttt{mandate-investigate} prompt
+    \;|\; chunked RAG. Multi-run is a free recall multiplier any consumer can adopt.
+  \end{block}
+\end{frame}
+
 % ---------- 8a. Static eval -- automatic metrics --------------------------
 \begin{frame}{Static evaluation -- automatic metrics}
   \textbf{Setup} \;\chip{100 ex sampled from 11{,}772 CodeReviewer test set}\;\chip{base vs SFT vs RLHF}
@@ -507,6 +543,58 @@
         \item Best: \texttt{\#50 JWT} -- 4 critical/security findings, all with code-level fixes
         \item Cross-file \texttt{\#53} solved via \texttt{semantic\_search} + \texttt{get\_file}
       \end{itemize}
+  \end{columns}
+\end{frame}
+
+% ---------- 8f. Scale test -- 750-line PR ---------------------------------
+\begin{frame}{Scale test -- a $\sim$750-line PR}
+  \textbf{Setup} \;\chip{4 service files, $\sim$750 LOC}\;\chip{steps=100, budget=30}\;\chip{full pipeline, end-to-end}
+  \vspace{0.5em}
+
+  \begin{columns}[T,onlytextwidth]
+    \column{0.46\textwidth}
+      \footnotesize\textbf{Run summary}\\[3pt]
+      \begin{tabular}{@{}lr@{}}
+        \toprule
+        Metric & Value \\
+        \midrule
+        Lines reviewed              & $\sim$750 \\
+        Agent steps used            & \textbf{37 / 100} \\
+        Inline findings posted      & \textbf{26} \\
+        \quad critical / security   & 9 \\
+        \quad high / security       & 16 \\
+        \quad critical / logic      & 1 \\
+        \bottomrule
+      \end{tabular}
+      \vspace{10pt}
+
+      \footnotesize\textbf{Per-file coverage}
+      \begin{itemize}\scriptsize
+        \item \texttt{admin-service.ts}: \textbf{16}
+        \item \texttt{billing-service.ts}: 5
+        \item \texttt{upload-service.ts}: 5
+        \item \texttt{user-service.ts}: 0 (\alert{not reached})
+      \end{itemize}
+    \column{0.50\textwidth}
+      \footnotesize\textbf{What the agent caught}
+      \begin{itemize}\scriptsize
+        \item SQL injection $\times$\,3 (\texttt{runReport}, \texttt{deleteAllPosts}, \texttt{deleteByDateRange})
+        \item Arbitrary SQL execution (\texttt{executeAdminQuery})
+        \item Arbitrary file read (\texttt{readAnyFile})
+        \item SSRF $\times$\,2 (\texttt{proxyToService}, \texttt{callInternalApi})
+        \item PII over-exposure (password\_hash, SSN, DOB, credit\_card)
+        \item User impersonation with no auth check
+        \item Bulk role-update with no auth
+        \item Arbitrary file deletion (\texttt{clearLogs})
+      \end{itemize}
+      \vspace{6pt}
+
+      \begin{block}{\footnotesize \faExclamationTriangle\ Honest scaling note}
+        \scriptsize Run errored at step 37 -- the smolagents conversation grew past
+        \texttt{llama-server}'s 32\,k context. The 26 findings were already buffered
+        and shipped via the finally-path. Fix: serve with \texttt{-c 65536}
+        (Qwen3.5 supports up to 262\,k).
+      \end{block}
   \end{columns}
 \end{frame}
 
