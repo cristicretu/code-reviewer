@@ -5,7 +5,7 @@ from agentic.tools import TOOLS
 
 
 def build_model():
-    return LiteLLMModel(model_id=MODEL_ID, api_base=API_BASE)
+    return LiteLLMModel(model_id=MODEL_ID, api_base=API_BASE, max_tokens=4096)
 
 
 def build_agent():
