@@ -18,6 +18,7 @@
 \usetikzlibrary{arrows.meta, positioning, fit, backgrounds, shapes.geometric}
 \usepackage{xcolor}
 \usepackage{fontawesome5}
+\usepackage{pifont}
 \usepackage{microtype}
 
 % --- Modern, restrained palette --------------------------------------------
@@ -75,8 +76,8 @@
       \end{itemize}
     \column{0.42\textwidth}
       \chip{\faGithub\ PR opened / synchronized}\\[6pt]
-      \chip{\faRobot\ Agent loop, $\leq$ 20 steps}\\[6pt]
-      \chip{\faCommentDots\ 1 review, $\leq$ 10 inline comments}
+      \chip{\faRobot\ Agent loop, $\leq$ 30 steps}\\[6pt]
+      \chip{\faCommentDots\ 1 review, $\leq$ 15 inline comments}
   \end{columns}
 \end{frame}
 
@@ -115,7 +116,7 @@
       \midrule
       GitHub Copilot Review            & partial & \ding{55} & \ding{55} \\
       CodeRabbit / Greptile            & yes     & \ding{55} & partial   \\
-      Cursor / VSCode review hints     & partial & \ding{55} & \ding{55} \\
+      Macroscope (AST graph + Opus 4)  & yes     & \ding{55} & yes       \\
       Microsoft CodeReviewer (2022)    & \ding{55} & yes    & \ding{55} \\
       \midrule
       \textbf{Ours}                    & \alert{yes} & \alert{yes} & \alert{yes} \\
@@ -154,7 +155,7 @@
     \node[box, below=14mm of agent, xshift=-32mm, minimum width=36mm] (model)
       {\faMicrochip\ \textbf{Model:} Qwen3.5-9B\\SFT (QLoRA) $\rightarrow$ GRPO};
     \node[box, below=14mm of agent, minimum width=28mm] (tools)
-      {\faWrench\ \textbf{17 tools}\\search / run / post};
+      {\faWrench\ \textbf{13 tools}\\search / read / post};
     \node[box, below=14mm of agent, xshift=32mm, minimum width=36mm] (rag)
       {\faDatabase\ \textbf{Indexed codebase}\\Chroma + CodeRankEmbed};
 
@@ -286,7 +287,7 @@
         \item Walks the repo, skips build / cache dirs (\texttt{.git}, \texttt{node\_modules}, \texttt{.venv}, \texttt{\_\_pycache\_\_}, \texttt{dist}, \texttt{build}, \dots)
         \item Keeps \texttt{.py}, \texttt{.md}, \texttt{.ts}, \texttt{.js}, \texttt{.go}, \texttt{.java}, \texttt{.rs}
         \item Drops empty files and anything over \alert{200\,KB}
-        \item \alert{Chunking}: one file = one snippet, no sub-file splitting
+        \item \alert{Chunking}: 60-line windows with 10-line overlap; \texttt{start\_line} kept in metadata so retrieval can cite a region
         \item Sent in batches of 25 to the ingest endpoint
       \end{itemize}
     \column{0.48\textwidth}
@@ -310,28 +311,20 @@
   Defaults: \alert{20 steps}, \alert{10 inline comments} (both tunable via env).
   \vspace{0.3em}
   \begin{columns}[T,onlytextwidth]
-    \column{0.33\textwidth}
+    \column{0.48\textwidth}
       \textbf{\small Retrieval}
       \begin{itemize}\scriptsize
-        \item \texttt{semantic\_search}\\(CodeRankEmbed + Chroma, behind a local FastAPI service)
-        \item \texttt{search\_keyword} (\texttt{grep -rn})
-        \item \texttt{search\_symbol} (Python \texttt{ast}, \texttt{.py} files)
-        \item \texttt{get\_file} (path + optional \texttt{line\_range})
+        \item \texttt{semantic\_search}\,(CodeRankEmbed + Chroma, behind a local FastAPI service)
+        \item \texttt{search\_keyword}\,(\texttt{grep -rn})
+        \item \texttt{search\_symbol}\,(Python \texttt{ast}, \texttt{.py} files)
+        \item \texttt{get\_file}\,(path + optional \texttt{line\_range})
       \end{itemize}
-    \column{0.33\textwidth}
-      \textbf{\small Execution}
-      \begin{itemize}\scriptsize
-        \item \texttt{run\_tests} (\texttt{pytest})
-        \item \texttt{run\_linter} (\texttt{ruff check})
-        \item \texttt{run\_typecheck} (\texttt{mypy})
-        \item \texttt{run\_snippet} (\texttt{python3} subprocess, 5\,s timeout)
-      \end{itemize}
-    \column{0.33\textwidth}
+    \column{0.48\textwidth}
       \textbf{\small Context}
       \begin{itemize}\scriptsize
-        \item \texttt{check\_history} (\texttt{git blame})
-        \item \texttt{get\_pr\_metadata} (GitHub REST: title, author, base/head, files)
-        \item \texttt{get\_team\_conventions}\\(\texttt{CLAUDE.md} / \texttt{CONTRIBUTING.md} / \texttt{.cursorrules})
+        \item \texttt{check\_history}\,(\texttt{git blame})
+        \item \texttt{get\_pr\_metadata}\,(GitHub REST: title, author, base/head, files)
+        \item \texttt{get\_team\_conventions}\,(\texttt{CLAUDE.md} / \texttt{CONTRIBUTING.md} / \texttt{.cursorrules})
         \item \texttt{load\_skill} -- playbooks (\texttt{react}, \texttt{nextjs}, \texttt{vite}, \texttt{supabase}, \texttt{async-js})
       \end{itemize}
   \end{columns}
@@ -465,46 +458,54 @@
   \end{columns}
 \end{frame}
 
-% ---------- 8d. Agentic eval -- distributions + analysis -------------------
-\begin{frame}{Agentic evaluation -- distributions \& analysis}
+% ---------- 8e. Agentic eval -- Opus 4.7 judge on 13 fresh PRs ------------
+\begin{frame}{Agentic evaluation -- Opus 4.7 judge on 13 fresh PRs}
+  \textbf{Setup} \;\chip{4-bit GGUF, end-to-end on real GitHub PRs}\;\chip{judge: claude-opus-4.7}\;\chip{steps=30, budget=15}
+  \vspace{0.4em}
+
   \begin{columns}[T,onlytextwidth]
-    \column{0.40\textwidth}
-      \footnotesize\textbf{Verdict distribution}\\[2pt]
-      \begin{tabular}{@{}lcc@{}}
+    \column{0.55\textwidth}
+      \footnotesize\textbf{Per-PR correctness} (judge score, GEval rubric)\\[2pt]
+      \scriptsize
+      \begin{tabular}{@{}rlc@{}}
         \toprule
-        Verdict & N & \% \\
+        PR & Kind & Score \\
         \midrule
-        \textsc{approve}          & 10 & 66.7 \\
-        \textsc{comment}          & 2  & 13.3 \\
-        \textsc{request\_changes} & 1  & 6.7 \\
+        \#44 & clean (Result)         & 1.00 \\
+        \#45 & clean (pagination)     & 1.00 \\
+        \#46 & clean (debounce)       & 1.00 \\
+        \#48 & OAuth callback         & 0.93 \\
+        \#50 & \textbf{JWT middleware} & \textbf{1.00} \\
+        \#51 & Stripe webhook         & 0.93 \\
+        \#52 & rate-limit (riddle)    & 0.80 \\
+        \#53 & \textbf{token store (riddle)} & \textbf{1.00} \\
+        \#56 & Redis cache            & 1.00 \\
         \midrule
-        No verdict (budget out)   & 2  & 13.3 \\
+        \multicolumn{2}{@{}l}{\#47, \#49, \#54, \#55} & 0 findings \\
         \bottomrule
       \end{tabular}
-      \vspace{8pt}
-
-      \footnotesize\textbf{Tool calls per run}\\[2pt]
-      \begin{tabular}{@{}cc@{}}
+    \column{0.42\textwidth}
+      \footnotesize\textbf{Aggregate}\\[2pt]
+      \scriptsize
+      \begin{tabular}{@{}lr@{}}
         \toprule
-        Calls & Runs \\
+        Metric & Value \\
         \midrule
-        0 & 2 \\
-        1 & 8 \\
-        2 & 3 \\
-        3 & 1 \\
-        5 & 1 \\
+        Comments judged                & 14 \\
+        Mean correctness               & \textbf{0.96} \\
+        Hallucinated findings          & \textbf{0 / 14} \\
+        Verdict acc.\ on clean PRs     & \textbf{3 / 3} \\
+        Verdict acc.\ on buggy PRs     & 4 / 8 \\
+        Programmatic recall            & 12 / 53 \\
         \bottomrule
       \end{tabular}
-      \vspace{4pt}
+      \vspace{6pt}
 
-      \scriptsize Avg 1.60 \;|\; 1.85 over completed runs \;|\; max 5
-    \column{0.56\textwidth}
-      \textbf{Analysis}
-      \begin{itemize}\small
-        \item \alert{2 budget-exhausted runs} share a pattern: the model emitted prose review text instead of Python tool calls -- smolagents has nothing executable to run
-        \item Best correctness on the \textsc{comment} / \textsc{request\_changes} cases -- those force the agent to post a specific inline comment first
-        \item 2 \textsc{approve}-with-0-calls runs drag the efficiency tail down (0.3 floor)
-        \item Step budget is comfortable: max-observed 5 / cap 10
+      \footnotesize\textbf{Headline}
+      \begin{itemize}\scriptsize
+        \item \alert{Zero hallucinations} across 14 judged findings
+        \item Best: \texttt{\#50 JWT} -- 4 critical/security findings, all with code-level fixes
+        \item Cross-file \texttt{\#53} solved via \texttt{semantic\_search} + \texttt{get\_file}
       \end{itemize}
   \end{columns}
 \end{frame}
