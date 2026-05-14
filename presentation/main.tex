@@ -170,47 +170,49 @@
 % ---------- 6b. Dataset ----------------------------------------------------
 \begin{frame}{Dataset -- Microsoft CodeReviewer}
   \chip{Source: Zenodo records/6900648}\;\chip{\textit{Comment Generation} split}\;\chip{846 MB raw}
-  \vspace{0.4em}
+  \vspace{0.3em}
 
-  Each example in the dataset is a real code diff from an open-source GitHub PR, paired
+  \footnotesize Each example in the dataset is a real code diff from an open-source GitHub PR, paired
   with the actual comment a human reviewer wrote on that diff. We use the public
   \textit{Comment Generation} split to teach the model the same task: read a diff, write a
   review.
-  \vspace{0.6em}
+  \vspace{0.4em}
 
   \begin{columns}[T,onlytextwidth]
     \column{0.50\textwidth}
-      \textbf{Cleaning before training}
-      \begin{itemize}\small
+      \footnotesize\textbf{Cleaning before training}
+      \begin{itemize}\scriptsize
         \item Drop comments under 10 characters (mostly noise)
         \item Drop generic acknowledgements: \textit{lgtm}, \textit{+1}, \textit{done}, \textit{nit}, \textit{ack}, \textit{fixed}
         \item Drop bare URLs and formatting-only changes
         \item Convert the dataset's \texttt{<add>}/\texttt{<del>} tags into a normal \texttt{+}/\texttt{-} line-prefix diff
       \end{itemize}
     \column{0.46\textwidth}
-      \textbf{One example becomes a 3-turn chat}
-      \begin{itemize}\small
+      \footnotesize\textbf{One example becomes a 3-turn chat}
+      \begin{itemize}\scriptsize
         \item \textbf{system}: a fixed instruction (next slide)
         \item \textbf{user}: \texttt{Review this code change: ```diff ... ```}
         \item \textbf{assistant}: the human reviewer's actual comment from the PR
       \end{itemize}
   \end{columns}
-  \vspace{0.5em}
+  \vspace{0.6em}
+
   \footnotesize After cleaning we shuffle and split 80/10/10 (seed 42): \alert{$\sim$94k train},
   \alert{$\sim$11.7k val}, \alert{11.7k test}. The test split is held out -- every number in our
   results tables is computed on examples the model has never seen.
+  \vspace{0.4em}
 \end{frame}
 
 % ---------- 6c. SFT implementation -----------------------------------------
 \begin{frame}{SFT -- our setup}
-  We fine-tune Qwen3.5-9B on the prepared chat-format dataset using TRL's
+  \footnotesize We fine-tune Qwen3.5-9B on the prepared chat-format dataset using TRL's
   \texttt{SFTTrainer} with Unsloth's kernel patches for speed. Only the LoRA adapters are
   updated; the base model stays frozen and quantised.
-  \vspace{0.5em}
+  \vspace{0.4em}
   \begin{columns}[T,onlytextwidth]
     \column{0.50\textwidth}
-      \textbf{Training} \;\chip{TRL SFTTrainer + Unsloth}\;\chip{A100 80GB}
-      \begin{itemize}\small
+      \footnotesize\textbf{Training} \;\chip{TRL SFTTrainer + Unsloth}\;\chip{A100 80GB}
+      \begin{itemize}\scriptsize
         \item Base model loaded in NF4 4-bit, bf16 compute, \texttt{max\_seq=2048}
         \item QLoRA adapters: rank $r{=}16$, $\alpha{=}16$, dropout 0
         \item Adapters attached to every projection layer (\texttt{q,k,v,o,gate,up,down\_proj})
@@ -219,7 +221,7 @@
         \item \alert{1 epoch} only -- more starts overfitting to the noisier reviewer comments
       \end{itemize}
       \vspace{4pt}
-      \footnotesize \faBox\ Published adapter: \texttt{cristicretu/code-reviewer-lora}
+      \scriptsize \faBox\ Published adapter: \texttt{cristicretu/code-reviewer-lora}
     \column{0.46\textwidth}
       \begin{block}{\footnotesize System prompt sent with every training example}
         \scriptsize\itshape You are an expert code reviewer. Given a code diff,
@@ -229,6 +231,7 @@
         code looks correct, say so briefly.
       \end{block}
   \end{columns}
+  \vspace{0.4em}
 \end{frame}
 
 % ---------- 6d. GRPO our setup + reward prompt -----------------------------
@@ -276,14 +279,14 @@
 
 % ---------- 7. RAG --------------------------------------------------------
 \begin{frame}{RAG -- indexing the repo}
-  Before the agent runs, the action walks the checked-out repo and indexes it into
+  \footnotesize Before the agent runs, the action walks the checked-out repo and indexes it into
   a per-repo Chroma collection. The agent's \texttt{semantic\_search} tool queries
   that collection during the review.
-  \vspace{0.6em}
+  \vspace{0.4em}
   \begin{columns}[T,onlytextwidth]
     \column{0.48\textwidth}
-      \textbf{Ingestion}
-      \begin{itemize}\small
+      \footnotesize\textbf{Ingestion}
+      \begin{itemize}\scriptsize
         \item Walks the repo, skips build / cache dirs (\texttt{.git}, \texttt{node\_modules}, \texttt{.venv}, \texttt{\_\_pycache\_\_}, \texttt{dist}, \texttt{build}, \dots)
         \item Keeps \texttt{.py}, \texttt{.md}, \texttt{.ts}, \texttt{.js}, \texttt{.go}, \texttt{.java}, \texttt{.rs}
         \item Drops empty files and anything over \alert{200\,KB}
@@ -291,17 +294,19 @@
         \item Sent in batches of 25 to the ingest endpoint
       \end{itemize}
     \column{0.48\textwidth}
-      \textbf{Embeddings \& storage}
-      \begin{itemize}\small
+      \footnotesize\textbf{Embeddings \& storage}
+      \begin{itemize}\scriptsize
         \item Embedder: \texttt{nomic-ai/CodeRankEmbed}, run locally via \texttt{SentenceTransformer}
         \item \texttt{chromadb.PersistentClient} on disk, one collection per repository, HNSW with cosine distance
         \item Doc IDs are a SHA-256 of \texttt{(repo, path, chunk\_index, content)}; we \texttt{upsert} so re-ingesting unchanged content is a no-op
       \end{itemize}
   \end{columns}
-  \vspace{0.6em}
-  \footnotesize\textbf{Retrieval:} \texttt{semantic\_search(query, k)} returns the top-$k$ chunks with
+  \vspace{0.5em}
+
+  \scriptsize\textbf{Retrieval:} \texttt{semantic\_search(query, k)} returns the top-$k$ chunks with
   their file path and a cosine-similarity score (computed as $1 - \text{distance}$). $k$ defaults to 10,
   capped at 20.
+  \vspace{0.4em}
 \end{frame}
 
 % ---------- 7b. Agent & tools ---------------------------------------------
@@ -341,27 +346,27 @@
 
 % ---------- 7c. Experiments we ran ----------------------------------------
 \begin{frame}{Experiments we ran on the agent loop}
-  Five ablations against a fixed PR set, all measured against the GEval rubric.
-  None of them required retraining -- they're all runtime / prompt / RAG changes.
-  \vspace{0.5em}
+  \footnotesize Five ablations against a fixed PR set, all measured against the GEval rubric.
+  None of them required retraining -- runtime / prompt / RAG changes only.
+  \vspace{0.4em}
 
-  \footnotesize
-  \begin{tabular}{@{}p{0.32\textwidth} p{0.30\textwidth} p{0.30\textwidth}@{}}
+  \scriptsize
+  \begin{tabular}{@{}p{0.30\textwidth} p{0.32\textwidth} p{0.30\textwidth}@{}}
     \toprule
     \textbf{What we tried} & \textbf{Setup} & \textbf{Result} \\
     \midrule
     Skills system off vs on
       & 8 PRs, \texttt{max-steps=15}, same model
-      & \alert{Recall $\times$\,5}: \texttt{1/40} $\rightarrow$ \texttt{5/40} TPs \\[3pt]
+      & \alert{Recall $\times$\,5}: \texttt{1/40} $\rightarrow$ \texttt{5/40} TPs \\[2pt]
     Step-budget sweep
       & PR \#11, \texttt{max-steps} $\in$ \{4, 8, 16, 24\}
-      & Sweet spot at \textbf{8}; above that the model bails early (\texttt{0/6} at 16, 24) \\[3pt]
+      & Sweet spot at \textbf{8}; above, model bails early (\texttt{0/6} at 16, 24) \\[2pt]
     Multi-run accumulation
       & 3 PRs $\times$\,3 sequential reruns; dedup by \texttt{(file, line)}
-      & PR \#5: \texttt{R} climbs \texttt{0.00 $\rightarrow$ 0.14 $\rightarrow$ 0.43} \\[3pt]
+      & PR \#5: \texttt{R} climbs \texttt{0.00 $\rightarrow$ 0.14 $\rightarrow$ 0.43} \\[2pt]
     Mandate-investigate prompt
-      & Rewrote system prompt to require $\geq$\,1 retrieval call before \texttt{post\_comment}
-      & \texttt{semantic\_search} usage: \alert{0\% $\rightarrow$ 11\%} of runs; recall \texttt{+42\%} relative \\[3pt]
+      & Rewrote prompt: require $\geq$\,1 retrieval call before \texttt{post\_comment}
+      & \texttt{semantic\_search}: \alert{0\% $\rightarrow$ 11\%} of runs; recall \texttt{+42\%} relative \\[2pt]
     Chunked RAG ingestion
       & File-level chunks $\rightarrow$ 60-line windows, 10-line overlap
       & Cross-file riddle PR \#53 catchable: agent reads \emph{both} files \\
@@ -369,10 +374,10 @@
   \end{tabular}
   \vspace{6pt}
 
-  \begin{block}{\footnotesize What stuck}
-    \scriptsize Shipped: \texttt{skills-on} \;|\; \texttt{steps=20--30} \;|\; \texttt{mandate-investigate} prompt
-    \;|\; chunked RAG. Multi-run is a free recall multiplier any consumer can adopt.
-  \end{block}
+  \footnotesize\textbf{What stuck:} \scriptsize Shipped \texttt{skills-on}, \texttt{steps=20--30},
+  \texttt{mandate-investigate} prompt, chunked RAG. Multi-run is a free recall multiplier any
+  consumer can adopt.
+  \vspace{0.4em}
 \end{frame}
 
 % ---------- 8a. Static eval -- automatic metrics --------------------------
@@ -587,14 +592,6 @@
         \item Bulk role-update with no auth
         \item Arbitrary file deletion (\texttt{clearLogs})
       \end{itemize}
-      \vspace{6pt}
-
-      \begin{block}{\footnotesize \faExclamationTriangle\ Honest scaling note}
-        \scriptsize Run errored at step 37 -- the smolagents conversation grew past
-        \texttt{llama-server}'s 32\,k context. The 26 findings were already buffered
-        and shipped via the finally-path. Fix: serve with \texttt{-c 65536}
-        (Qwen3.5 supports up to 262\,k).
-      \end{block}
   \end{columns}
 \end{frame}
 
