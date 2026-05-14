@@ -166,28 +166,6 @@
   \footnotesize\textcolor{mute}{Top: pipeline. Bottom: what the agent calls into during the loop.}
 \end{frame}
 
-% ---------- 6. SFT concept -------------------------------------------------
-\begin{frame}{Supervised fine-tuning -- the idea}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.48\textwidth}
-      \textbf{\faLayerGroup\ What SFT does}
-      \begin{itemize}\small
-        \item Start from a base LM -- a next-token predictor trained on the open web
-        \item Train on \emph{(prompt, ideal-response)} pairs
-        \item Loss is only computed on the model's reply (the review), \alert{not on the diff} -- the training signal teaches it to write reviews, not to re-emit the diff
-        \item Architecture unchanged; the weights are updated so the model's outputs come to look like the human reviews in the training data
-      \end{itemize}
-    \column{0.48\textwidth}
-      \textbf{\faMicrochip\ Why QLoRA on top}
-      \begin{itemize}\small
-        \item Full FT of a 9B model in bf16 with optimizer state $\approx$ 100\,GB
-        \item \alert{LoRA} -- freeze the base, train rank-$r$ adapters on attention + MLP projections; ${\sim}$0.5\% of weights are trainable
-        \item \alert{4-bit NF4} -- quantise the frozen base; the whole stack fits on one A100 80\,GB with batch 32
-        \item Output: a small $\sim$80\,MB adapter file -- you load it on top of the base at inference time
-      \end{itemize}
-  \end{columns}
-\end{frame}
-
 % ---------- 6b. Dataset ----------------------------------------------------
 \begin{frame}{Dataset -- Microsoft CodeReviewer}
   \chip{Source: Zenodo records/6900648}\;\chip{\textit{Comment Generation} split}\;\chip{846 MB raw}
@@ -250,32 +228,6 @@
         code looks correct, say so briefly.
       \end{block}
   \end{columns}
-\end{frame}
-
-% ---------- 6c. GRPO concept -----------------------------------------------
-\begin{frame}{RLHF with GRPO -- the idea}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.50\textwidth}
-      \textbf{Why a second stage?}
-      \begin{itemize}\small
-        \item SFT teaches the model to \emph{imitate} the corpus -- including its vague / wrong / lazy reviews
-        \item RLHF pushes the model toward what we actually value, defined by a \alert{reward function} instead of demos
-        \item Reward can be a learned model, a rule, or (here) an LLM-as-judge
-      \end{itemize}
-    \column{0.46\textwidth}
-      \textbf{How GRPO works}\;\chip{Group Relative Policy Optimisation}
-      \begin{itemize}\small
-        \item For each prompt, the model writes several candidate reviews (we use 4)
-        \item A reward function scores all of them
-        \item The model is updated to write more like the higher-scoring candidates and less like the lower-scoring ones, judged against the group's own average
-        \item No separate critic / value network is needed -- the group itself is the baseline that classical PPO would have learned
-      \end{itemize}
-  \end{columns}
-  \vspace{0.5em}
-  \begin{block}{One training step, in plain words}
-    \footnotesize Sample 4 candidate reviews $\rightarrow$ score each $\rightarrow$ update the model toward
-    the better ones, with a small KL term keeping it close to the SFT checkpoint so it doesn't drift away.
-  \end{block}
 \end{frame}
 
 % ---------- 6d. GRPO our setup + reward prompt -----------------------------
